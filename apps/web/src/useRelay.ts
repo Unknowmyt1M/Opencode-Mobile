@@ -10,9 +10,18 @@ import {
   type SessionMessage,
   type SnapshotFileDiff,
   type ProjectContext,
+  type PtySession,
+  type ModelInfo,
+  type PermissionItem,
+  type PtyListResultPayload,
+  type PtyCreateResultPayload,
+  type SessionAbortResultPayload,
+  type ModelListResultPayload,
+  type PermissionListResultPayload,
+  type PermissionReplyResultPayload,
 } from '@opencode-remote/protocol';
 
-export type WorkspaceTab = 'chat' | 'files' | 'diff' | 'terminal' | 'activity';
+export type WorkspaceTab = 'chat' | 'review' | 'terminal' | 'activity' | 'files' | 'diff';
 
 export function useRelay(relayWsUrl?: string) {
   const [connectionState, setConnectionState] = useState<ConnectionState>('DISCONNECTED');
@@ -28,6 +37,16 @@ export function useRelay(relayWsUrl?: string) {
   const [activeDiffFile, setActiveDiffFile] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('chat');
 
+  // Phase 3 Extensions: PTY Terminal, Model Selector, Permissions
+  const [ptys, setPtys] = useState<PtySession[]>([]);
+  const [activePtyId, setActivePtyId] = useState<string | null>(null);
+  const ptyDataListeners = useRef<Map<string, Set<(data: string) => void>>>(new Map());
+
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [selectedModel, setSelectedModel] = useState<{ providerID: string; modelID: string } | null>(null);
+
+  const [permissions, setPermissions] = useState<PermissionItem[]>([]);
+
   const [streamingText, setStreamingText] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [lastError, setLastError] = useState<string | null>(null);
@@ -36,7 +55,7 @@ export function useRelay(relayWsUrl?: string) {
   const reconnectAttemptRef = useRef<number>(0);
   const reconnectTimerRef = useRef<number | null>(null);
   const isUnmountedRef = useRef<boolean>(false);
-  const pendingRequests = useRef<Map<string, (payload: any) => void>>(new Map());
+  const pendingRequests = useRef<Map<string, (payload: any, isError?: boolean, errMsg?: string) => void>>(new Map());
   const pairingPromiseRef = useRef<{
     resolve: (val: { success: boolean; status?: string; message?: string }) => void;
     timer: number;
@@ -103,9 +122,13 @@ export function useRelay(relayWsUrl?: string) {
           reject(new Error('Request timed out'));
         }, 15000);
 
-        pendingRequests.current.set(message.id, (payload) => {
+        pendingRequests.current.set(message.id, (payload, isError, errMsg) => {
           clearTimeout(timer);
-          resolve(payload as TResult);
+          if (isError) {
+            reject(new Error(errMsg || 'RPC request failed'));
+          } else {
+            resolve(payload as TResult);
+          }
         });
 
         wsRef.current.send(JSON.stringify(message));
@@ -381,8 +404,37 @@ export function useRelay(relayWsUrl?: string) {
               break;
             }
 
+            case 'PTY_OUTPUT': {
+              const { ptyId, data } = msg.payload;
+              const set = ptyDataListeners.current.get(ptyId);
+              if (set) {
+                set.forEach((cb) => {
+                  try { cb(data); } catch {}
+                });
+              }
+              break;
+            }
+
+            case 'PTY_CLOSED': {
+              const { ptyId } = msg.payload;
+              setPtys((prev) => prev.filter((p) => p.id !== ptyId));
+              setActivePtyId((curr) => (curr === ptyId ? null : curr));
+              break;
+            }
+
+            case 'PERMISSION_REQUEST': {
+              const perm = msg.payload as any;
+              setPermissions((prev) => [...prev.filter((p) => p.id !== perm.id), perm]);
+              break;
+            }
+
             case 'ERROR': {
               setLastError(`[${msg.payload.code}] ${msg.payload.message}`);
+              if (msg.payload.requestId && pendingRequests.current.has(msg.payload.requestId)) {
+                const resolver = pendingRequests.current.get(msg.payload.requestId);
+                pendingRequests.current.delete(msg.payload.requestId);
+                if (resolver) resolver(null, true, msg.payload.message);
+              }
               break;
             }
 
@@ -578,6 +630,197 @@ export function useRelay(relayWsUrl?: string) {
     [deviceTokens]
   );
 
+  // ==========================================
+  // PTY Operations
+  // ==========================================
+  const fetchPtys = useCallback(async () => {
+    if (!selectedDevice) return;
+    const token = deviceTokensRef.current[selectedDevice.deviceId];
+    try {
+      const res = await sendRpc<PtyListResultPayload>(
+        createMessage('PTY_LIST', {
+          deviceId: selectedDevice.deviceId,
+          deviceToken: token,
+        })
+      );
+      setPtys(res.ptys || []);
+      if (res.ptys && res.ptys.length > 0 && !activePtyId) {
+        setActivePtyId(res.ptys[0].id);
+      }
+    } catch (err: any) {
+      console.warn('Failed to list PTYs:', err.message);
+    }
+  }, [selectedDevice, sendRpc, activePtyId]);
+
+  const createPty = useCallback(
+    async (title?: string, command?: string, cwd?: string): Promise<PtySession | null> => {
+      if (!selectedDevice) return null;
+      const token = deviceTokensRef.current[selectedDevice.deviceId];
+      try {
+        const res = await sendRpc<PtyCreateResultPayload>(
+          createMessage('PTY_CREATE', {
+            deviceId: selectedDevice.deviceId,
+            deviceToken: token,
+            title: title || 'Terminal',
+            command,
+            cwd,
+          })
+        );
+        if (res.pty) {
+          setPtys((prev) => [...prev.filter((p) => p.id !== res.pty.id), res.pty]);
+          setActivePtyId(res.pty.id);
+          return res.pty;
+        }
+      } catch (err: any) {
+        setLastError(`Failed to launch terminal: ${err.message}`);
+      }
+      return null;
+    },
+    [selectedDevice, sendRpc]
+  );
+
+  const sendPtyInput = useCallback(
+    (ptyId: string, data: string) => {
+      if (!selectedDevice || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      const token = deviceTokensRef.current[selectedDevice.deviceId];
+      const msg = createMessage('PTY_INPUT', {
+        deviceId: selectedDevice.deviceId,
+        deviceToken: token,
+        ptyId,
+        data,
+      });
+      wsRef.current.send(JSON.stringify(msg));
+    },
+    [selectedDevice]
+  );
+
+  const resizePty = useCallback(
+    (ptyId: string, cols: number, rows: number) => {
+      if (!selectedDevice || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      const token = deviceTokensRef.current[selectedDevice.deviceId];
+      const msg = createMessage('PTY_RESIZE', {
+        deviceId: selectedDevice.deviceId,
+        deviceToken: token,
+        ptyId,
+        cols,
+        rows,
+      });
+      wsRef.current.send(JSON.stringify(msg));
+    },
+    [selectedDevice]
+  );
+
+  const closePty = useCallback(
+    async (ptyId: string) => {
+      if (!selectedDevice || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      const token = deviceTokensRef.current[selectedDevice.deviceId];
+      const msg = createMessage('PTY_CLOSE', {
+        deviceId: selectedDevice.deviceId,
+        deviceToken: token,
+        ptyId,
+      });
+      wsRef.current.send(JSON.stringify(msg));
+      setPtys((prev) => prev.filter((p) => p.id !== ptyId));
+      setActivePtyId((curr) => (curr === ptyId ? null : curr));
+    },
+    [selectedDevice]
+  );
+
+  const subscribePtyData = useCallback((ptyId: string, cb: (data: string) => void) => {
+    if (!ptyDataListeners.current.has(ptyId)) {
+      ptyDataListeners.current.set(ptyId, new Set());
+    }
+    ptyDataListeners.current.get(ptyId)!.add(cb);
+    return () => {
+      ptyDataListeners.current.get(ptyId)?.delete(cb);
+    };
+  }, []);
+
+  // ==========================================
+  // Session Abort
+  // ==========================================
+  const abortActiveSession = useCallback(async (): Promise<boolean> => {
+    if (!selectedDevice || !activeSession) return false;
+    const token = deviceTokensRef.current[selectedDevice.deviceId];
+    try {
+      const res = await sendRpc<SessionAbortResultPayload>(
+        createMessage('SESSION_ABORT', {
+          deviceId: selectedDevice.deviceId,
+          deviceToken: token,
+          sessionId: activeSession.session.id,
+        })
+      );
+      setIsStreaming(false);
+      return res.success;
+    } catch {
+      setIsStreaming(false);
+      return false;
+    }
+  }, [selectedDevice, activeSession, sendRpc]);
+
+  // ==========================================
+  // Providers & Models
+  // ==========================================
+  const fetchModels = useCallback(async () => {
+    if (!selectedDevice) return;
+    const token = deviceTokensRef.current[selectedDevice.deviceId];
+    try {
+      const res = await sendRpc<ModelListResultPayload>(
+        createMessage('MODEL_LIST', {
+          deviceId: selectedDevice.deviceId,
+          deviceToken: token,
+        })
+      );
+      setModels(res.models || []);
+      if (res.defaultModel && !selectedModel) {
+        setSelectedModel(res.defaultModel);
+      }
+    } catch (err: any) {
+      console.warn('Failed to fetch models:', err.message);
+    }
+  }, [selectedDevice, sendRpc, selectedModel]);
+
+  // ==========================================
+  // Interactive Permissions
+  // ==========================================
+  const fetchPermissions = useCallback(async () => {
+    if (!selectedDevice) return;
+    const token = deviceTokensRef.current[selectedDevice.deviceId];
+    try {
+      const res = await sendRpc<PermissionListResultPayload>(
+        createMessage('PERMISSION_LIST', {
+          deviceId: selectedDevice.deviceId,
+          deviceToken: token,
+        })
+      );
+      setPermissions(res.permissions || []);
+    } catch (err: any) {
+      console.warn('Failed to fetch permissions:', err.message);
+    }
+  }, [selectedDevice, sendRpc]);
+
+  const replyPermission = useCallback(
+    async (requestId: string, reply: 'allow' | 'deny'): Promise<boolean> => {
+      if (!selectedDevice) return false;
+      const token = deviceTokensRef.current[selectedDevice.deviceId];
+      try {
+        const res = await sendRpc<PermissionReplyResultPayload>(
+          createMessage('PERMISSION_REPLY', {
+            deviceId: selectedDevice.deviceId,
+            deviceToken: token,
+            requestId,
+            reply,
+          })
+        );
+        setPermissions((prev) => prev.filter((p) => p.id !== requestId));
+        return res.success;
+      } catch {
+        return false;
+      }
+    },
+    [selectedDevice, sendRpc]
+  );
+
   useEffect(() => {
     isUnmountedRef.current = false;
     connect();
@@ -615,6 +858,24 @@ export function useRelay(relayWsUrl?: string) {
     sendMessage,
     fetchSessionDiff,
     fetchWorkspace,
+    // Phase 3 Additions
+    ptys,
+    activePtyId,
+    setActivePtyId,
+    fetchPtys,
+    createPty,
+    sendPtyInput,
+    resizePty,
+    closePty,
+    subscribePtyData,
+    abortActiveSession,
+    models,
+    selectedModel,
+    setSelectedModel,
+    fetchModels,
+    permissions,
+    fetchPermissions,
+    replyPermission,
     closeActiveSession: () => {
       setActiveSession(null);
       setSessionDiffs([]);

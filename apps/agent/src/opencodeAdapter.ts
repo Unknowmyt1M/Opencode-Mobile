@@ -5,6 +5,9 @@ import type {
   SessionMessage,
   SnapshotFileDiff,
   ProjectContext,
+  PtySession,
+  ModelInfo,
+  PermissionItem,
 } from '@opencode-remote/protocol';
 
 export interface OpenCodeAdapterOptions {
@@ -426,5 +429,143 @@ export class OpenCodeAdapter {
       this.eventAbortController.abort();
       this.eventAbortController = null;
     }
+  }
+
+  // ==========================================
+  // PTY Operations
+  // ==========================================
+  async createPty(title?: string, command?: string, cwd?: string): Promise<PtySession> {
+    const res = await fetch(`${this.baseUrl}/pty`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ title, command, cwd }),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to create PTY: HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as any;
+    return {
+      id: data.id,
+      title: data.title || title || 'Terminal',
+      command: data.command || command || 'powershell.exe',
+      cwd: data.cwd || cwd,
+      status: data.status || 'running',
+      pid: data.pid,
+    };
+  }
+
+  async listPtys(): Promise<PtySession[]> {
+    const res = await fetch(`${this.baseUrl}/pty`, {
+      headers: this.getHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to list PTYs: HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as any[];
+    return (data || []).map((p) => ({
+      id: p.id,
+      title: p.title || 'Terminal',
+      command: p.command || 'powershell.exe',
+      cwd: p.cwd,
+      status: p.status || 'running',
+      pid: p.pid,
+    }));
+  }
+
+  async resizePty(ptyId: string, rows: number, cols: number): Promise<boolean> {
+    const res = await fetch(`${this.baseUrl}/pty/${encodeURIComponent(ptyId)}`, {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ size: { rows, cols } }),
+    });
+    return res.ok;
+  }
+
+  async closePty(ptyId: string): Promise<boolean> {
+    const res = await fetch(`${this.baseUrl}/pty/${encodeURIComponent(ptyId)}`, {
+      method: 'DELETE',
+      headers: this.getHeaders(),
+    });
+    return res.ok;
+  }
+
+  getPtyWsUrl(ptyId: string): string {
+    const wsBase = this.baseUrl.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
+    return `${wsBase}/pty/${encodeURIComponent(ptyId)}/connect`;
+  }
+
+  // ==========================================
+  // Session Abort
+  // ==========================================
+  async abortSession(sessionId: string): Promise<boolean> {
+    const res = await fetch(`${this.baseUrl}/session/${encodeURIComponent(sessionId)}/abort`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({}),
+    });
+    return res.ok;
+  }
+
+  // ==========================================
+  // Providers & Models
+  // ==========================================
+  async getProvidersAndModels(): Promise<{ models: ModelInfo[]; defaultModel?: { providerID: string; modelID: string } }> {
+    const res = await fetch(`${this.baseUrl}/provider`, {
+      headers: this.getHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to get providers: HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as any;
+    const allProviders: any[] = data.all || data.providers || [];
+    const defaultModel = data.default ? { providerID: data.default.providerID, modelID: data.default.modelID } : this.defaultModel;
+
+    const models: ModelInfo[] = [];
+    for (const p of allProviders) {
+      const pModels: any[] = p.models ? Object.values(p.models) : [];
+      for (const m of pModels) {
+        models.push({
+          id: m.id,
+          name: m.name || m.id,
+          providerId: p.id,
+          providerName: p.name || p.id,
+        });
+      }
+    }
+
+    return {
+      models,
+      defaultModel,
+    };
+  }
+
+  // ==========================================
+  // Permissions
+  // ==========================================
+  async listPermissions(): Promise<PermissionItem[]> {
+    const res = await fetch(`${this.baseUrl}/permission`, {
+      headers: this.getHeaders(),
+    });
+    if (!res.ok) {
+      return [];
+    }
+    const data = (await res.json()) as any[];
+    return (data || []).map((p: any) => ({
+      id: p.id,
+      title: p.title || p.description || 'Permission requested',
+      pattern: p.pattern,
+      command: p.command,
+      sessionID: p.sessionID,
+      time: p.time || p.createdAt,
+    }));
+  }
+
+  async replyPermission(requestId: string, reply: 'allow' | 'deny'): Promise<boolean> {
+    const res = await fetch(`${this.baseUrl}/permission/${encodeURIComponent(requestId)}/reply`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ reply }),
+    });
+    return res.ok;
   }
 }

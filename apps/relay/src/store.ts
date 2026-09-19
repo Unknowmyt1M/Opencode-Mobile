@@ -31,7 +31,16 @@ export class RelayStore {
   private clientRateLimits = new Map<string, { count: number; resetAt: number }>();
 
   constructor(storagePath?: string) {
-    this.filePath = storagePath || path.resolve(process.cwd(), '.relay-store.json');
+    if (storagePath) {
+      this.filePath = storagePath;
+    } else {
+      const candidates = [
+        path.resolve(process.cwd(), 'apps', 'relay', '.relay-store.json'),
+        path.resolve(process.cwd(), '.relay-store.json'),
+      ];
+      const existing = candidates.find((c) => fs.existsSync(c));
+      this.filePath = existing || candidates[0];
+    }
     this.load();
   }
 

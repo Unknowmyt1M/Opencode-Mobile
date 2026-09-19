@@ -590,6 +590,253 @@ export const WorkspaceGetResultMessageSchema = z.object({
   }),
 });
 
+// ==========================================
+// Phase 3 Redesign: Real PTY Terminal Schemas
+// ==========================================
+export const PtySessionSchema = z.object({
+  id: z.string().min(1).max(128),
+  title: z.string().max(128),
+  command: z.string(),
+  args: z.array(z.string()).optional(),
+  cwd: z.string().optional(),
+  status: z.string(),
+  pid: z.number().int().optional(),
+});
+
+export const PtyCreateMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PTY_CREATE'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+    title: z.string().max(128).optional(),
+    command: z.string().optional(),
+    args: z.array(z.string()).optional(),
+    cwd: z.string().optional(),
+  }),
+});
+
+export const PtyCreateResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PTY_CREATE_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    pty: PtySessionSchema,
+  }),
+});
+
+export const PtyListMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PTY_LIST'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const PtyListResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PTY_LIST_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    ptys: z.array(PtySessionSchema),
+  }),
+});
+
+export const PtyInputMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PTY_INPUT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+    ptyId: z.string().min(1).max(128),
+    data: z.string(),
+  }),
+});
+
+export const PtyOutputMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PTY_OUTPUT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    ptyId: z.string().min(1).max(128),
+    data: z.string(),
+  }),
+});
+
+export const PtyResizeMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PTY_RESIZE'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+    ptyId: z.string().min(1).max(128),
+    cols: z.number().int().positive(),
+    rows: z.number().int().positive(),
+  }),
+});
+
+export const PtyCloseMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PTY_CLOSE'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+    ptyId: z.string().min(1).max(128),
+  }),
+});
+
+export const PtyClosedMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PTY_CLOSED'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    ptyId: z.string().min(1).max(128),
+  }),
+});
+
+// ==========================================
+// Phase 3 Redesign: Session Abort Schemas
+// ==========================================
+export const SessionAbortMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_ABORT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+    sessionId: z.string().min(1).max(128),
+  }),
+});
+
+export const SessionAbortResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_ABORT_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    success: z.boolean(),
+  }),
+});
+
+// ==========================================
+// Phase 3 Redesign: Models & Providers Schemas
+// ==========================================
+export const ModelInfoSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  providerId: z.string(),
+  providerName: z.string().optional(),
+});
+
+export const ModelListMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('MODEL_LIST'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const ModelListResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('MODEL_LIST_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    models: z.array(ModelInfoSchema),
+    defaultModel: z
+      .object({
+        providerID: z.string(),
+        modelID: z.string(),
+      })
+      .optional(),
+  }),
+});
+
+// ==========================================
+// Phase 3 Redesign: Permissions Schemas
+// ==========================================
+export const PermissionItemSchema = z.object({
+  id: z.string(),
+  title: z.string().optional(),
+  pattern: z.string().optional(),
+  command: z.string().optional(),
+  sessionID: z.string().optional(),
+  time: z.number().optional(),
+});
+
+export const PermissionListMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PERMISSION_LIST'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const PermissionListResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PERMISSION_LIST_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    permissions: z.array(PermissionItemSchema),
+  }),
+});
+
+export const PermissionReplyMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PERMISSION_REPLY'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+    requestId: z.string().min(1).max(128),
+    reply: z.enum(['allow', 'deny']),
+  }),
+});
+
+export const PermissionReplyResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PERMISSION_REPLY_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    requestId: z.string().min(1).max(128),
+    success: z.boolean(),
+  }),
+});
+
 // Generic Infra
 export const PingMessageSchema = z.object({
   id: z.string().min(1).max(64),
@@ -668,6 +915,24 @@ export const MessageSchema = z.discriminatedUnion('type', [
   SessionDiffGetResultMessageSchema,
   WorkspaceGetMessageSchema,
   WorkspaceGetResultMessageSchema,
+  // Phase 3 Extensions: PTY, Abort, Models, Permissions
+  PtyCreateMessageSchema,
+  PtyCreateResultMessageSchema,
+  PtyListMessageSchema,
+  PtyListResultMessageSchema,
+  PtyInputMessageSchema,
+  PtyOutputMessageSchema,
+  PtyResizeMessageSchema,
+  PtyCloseMessageSchema,
+  PtyClosedMessageSchema,
+  SessionAbortMessageSchema,
+  SessionAbortResultMessageSchema,
+  ModelListMessageSchema,
+  ModelListResultMessageSchema,
+  PermissionListMessageSchema,
+  PermissionListResultMessageSchema,
+  PermissionReplyMessageSchema,
+  PermissionReplyResultMessageSchema,
   // Infra
   PingMessageSchema,
   PongMessageSchema,
@@ -679,8 +944,8 @@ export type ProtocolMessage = z.infer<typeof MessageSchema>;
 export function parseProtocolMessage(raw: unknown): ProtocolMessage {
   let parsedJson = raw;
   if (typeof raw === 'string') {
-    if (raw.length > 65536) { // 64KB max limit
-      throw new Error('Message payload exceeds maximum limit of 64KB');
+    if (raw.length > 1048576) { // 1MB max limit for diffs and terminal buffers
+      throw new Error('Message payload exceeds maximum limit of 1MB');
     }
     parsedJson = JSON.parse(raw);
   }

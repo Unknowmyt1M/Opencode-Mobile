@@ -611,8 +611,90 @@ export function buildRelayServer(options: RelayOptions = {}): {
             case 'MESSAGE_DELTA':
             case 'MESSAGE_COMPLETED':
             case 'MESSAGE_ERROR':
-            case 'OPENCODE_EVENT': {
+            case 'OPENCODE_EVENT':
+            case 'PTY_OUTPUT':
+            case 'PTY_CLOSED': {
               registry.broadcastToClients(message);
+              break;
+            }
+
+            // PTY Management & I/O
+            case 'PTY_CREATE':
+            case 'PTY_LIST':
+            case 'SESSION_ABORT':
+            case 'MODEL_LIST':
+            case 'PERMISSION_LIST':
+            case 'PERMISSION_REPLY': {
+              const { deviceId, deviceToken } = message.payload as { deviceId: string; deviceToken?: string };
+              if (!store.verifyDeviceToken(deviceId, deviceToken)) {
+                socket.send(
+                  JSON.stringify(
+                    createMessage('ERROR', {
+                      code: 'DEVICE_NOT_AUTHORIZED',
+                      message: 'Access denied: invalid or revoked device token',
+                      requestId: message.id,
+                    })
+                  )
+                );
+                return;
+              }
+
+              const agentSocket = registry.getAgentSocket(deviceId);
+              if (!agentSocket || agentSocket.readyState !== WebSocket.OPEN) {
+                socket.send(
+                  JSON.stringify(
+                    createMessage('ERROR', {
+                      code: 'DEVICE_OFFLINE',
+                      message: 'Target computer is offline',
+                      requestId: message.id,
+                    })
+                  )
+                );
+                return;
+              }
+
+              requestToClient.set(message.id, socket);
+              agentSocket.send(JSON.stringify(message));
+              break;
+            }
+
+            case 'PTY_CREATE_RESULT':
+            case 'PTY_LIST_RESULT':
+            case 'SESSION_ABORT_RESULT':
+            case 'MODEL_LIST_RESULT':
+            case 'PERMISSION_LIST_RESULT':
+            case 'PERMISSION_REPLY_RESULT': {
+              const clientSocket = requestToClient.get(message.id);
+              if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
+                clientSocket.send(JSON.stringify(message));
+                requestToClient.delete(message.id);
+              } else {
+                registry.broadcastToClients(message);
+              }
+              break;
+            }
+
+            case 'PTY_INPUT':
+            case 'PTY_RESIZE':
+            case 'PTY_CLOSE': {
+              const { deviceId, deviceToken } = message.payload as { deviceId: string; deviceToken?: string };
+              if (!store.verifyDeviceToken(deviceId, deviceToken)) {
+                socket.send(
+                  JSON.stringify(
+                    createMessage('ERROR', {
+                      code: 'DEVICE_NOT_AUTHORIZED',
+                      message: 'Access denied: invalid or revoked device token',
+                      requestId: message.id,
+                    })
+                  )
+                );
+                return;
+              }
+
+              const agentSocket = registry.getAgentSocket(deviceId);
+              if (agentSocket && agentSocket.readyState === WebSocket.OPEN) {
+                agentSocket.send(JSON.stringify(message));
+              }
               break;
             }
 

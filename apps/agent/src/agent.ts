@@ -23,6 +23,7 @@ export class RemoteAgent {
   private isShuttingDown = false;
   private sequence = 1;
   private paired = false;
+  private ptySockets: Map<string, WebSocket> = new Map();
 
   constructor(config: AgentConfig) {
     this.config = config;
@@ -49,6 +50,55 @@ export class RemoteAgent {
     this.adapter.startEventStream((evt: any) => {
       this.handleOpenCodeEvent(evt);
     });
+  }
+
+  private attachPtySocket(ptyId: string, initialInput?: string): WebSocket {
+    const existing = this.ptySockets.get(ptyId);
+    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+      if (initialInput && existing.readyState === WebSocket.OPEN) {
+        existing.send(initialInput);
+      }
+      return existing;
+    }
+
+    const wsUrl = this.adapter.getPtyWsUrl(ptyId);
+    const ptyWs = new WebSocket(wsUrl);
+    this.ptySockets.set(ptyId, ptyWs);
+
+    ptyWs.on('open', () => {
+      console.log(`[agent] Connected to OpenCode PTY ${ptyId}`);
+      if (initialInput) {
+        ptyWs.send(initialInput);
+      }
+    });
+
+    ptyWs.on('message', (data: any) => {
+      const text = typeof data === 'string' ? data : data.toString('utf-8');
+      this.sendMessage(
+        createMessage('PTY_OUTPUT', {
+          deviceId: this.config.deviceId,
+          ptyId,
+          data: text,
+        })
+      );
+    });
+
+    ptyWs.on('close', () => {
+      console.log(`[agent] OpenCode PTY ${ptyId} closed`);
+      this.ptySockets.delete(ptyId);
+      this.sendMessage(
+        createMessage('PTY_CLOSED', {
+          deviceId: this.config.deviceId,
+          ptyId,
+        })
+      );
+    });
+
+    ptyWs.on('error', (err) => {
+      console.warn(`[agent] OpenCode PTY ${ptyId} error:`, err.message);
+    });
+
+    return ptyWs;
   }
 
   private sessionTurns: Map<string, { messageId: string; startedEmitted: boolean; completedEmitted: boolean }> = new Map();
@@ -499,6 +549,183 @@ export class RemoteAgent {
                 sessionId: msg.payload.sessionId,
                 error: err.message,
               })
+            );
+          }
+          break;
+        }
+
+        // ==========================================
+        // PTY Handlers
+        // ==========================================
+        case 'PTY_CREATE': {
+          try {
+            const pty = await this.adapter.createPty(msg.payload.title, msg.payload.command, msg.payload.cwd);
+            // Auto connect websocket to OpenCode
+            this.attachPtySocket(pty.id);
+            this.sendMessage(
+              createMessage('PTY_CREATE_RESULT', {
+                deviceId: this.config.deviceId,
+                pty,
+              }, msg.id)
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage('ERROR', {
+                code: 'PTY_CREATE_FAILED',
+                message: err.message || 'Failed to create PTY',
+                requestId: msg.id,
+              })
+            );
+          }
+          break;
+        }
+
+        case 'PTY_LIST': {
+          try {
+            const ptys = await this.adapter.listPtys();
+            this.sendMessage(
+              createMessage('PTY_LIST_RESULT', {
+                deviceId: this.config.deviceId,
+                ptys,
+              }, msg.id)
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage('ERROR', {
+                code: 'PTY_LIST_FAILED',
+                message: err.message || 'Failed to list PTYs',
+                requestId: msg.id,
+              })
+            );
+          }
+          break;
+        }
+
+        case 'PTY_INPUT': {
+          try {
+            const ws = this.attachPtySocket(msg.payload.ptyId);
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(msg.payload.data);
+            }
+          } catch (err: any) {
+            console.warn(`[agent] Failed to send PTY input:`, err.message);
+          }
+          break;
+        }
+
+        case 'PTY_RESIZE': {
+          try {
+            await this.adapter.resizePty(msg.payload.ptyId, msg.payload.rows, msg.payload.cols);
+          } catch (err: any) {
+            console.warn(`[agent] Failed to resize PTY:`, err.message);
+          }
+          break;
+        }
+
+        case 'PTY_CLOSE': {
+          try {
+            const ws = this.ptySockets.get(msg.payload.ptyId);
+            if (ws) {
+              try { ws.close(); } catch {}
+              this.ptySockets.delete(msg.payload.ptyId);
+            }
+            await this.adapter.closePty(msg.payload.ptyId);
+          } catch (err: any) {
+            console.warn(`[agent] Failed to close PTY:`, err.message);
+          }
+          break;
+        }
+
+        // ==========================================
+        // Session Abort
+        // ==========================================
+        case 'SESSION_ABORT': {
+          try {
+            const success = await this.adapter.abortSession(msg.payload.sessionId);
+            this.sendMessage(
+              createMessage('SESSION_ABORT_RESULT', {
+                deviceId: this.config.deviceId,
+                sessionId: msg.payload.sessionId,
+                success,
+              }, msg.id)
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage('SESSION_ABORT_RESULT', {
+                deviceId: this.config.deviceId,
+                sessionId: msg.payload.sessionId,
+                success: false,
+              }, msg.id)
+            );
+          }
+          break;
+        }
+
+        // ==========================================
+        // Model & Provider List
+        // ==========================================
+        case 'MODEL_LIST': {
+          try {
+            const { models, defaultModel } = await this.adapter.getProvidersAndModels();
+            this.sendMessage(
+              createMessage('MODEL_LIST_RESULT', {
+                deviceId: this.config.deviceId,
+                models,
+                defaultModel,
+              }, msg.id)
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage('ERROR', {
+                code: 'MODEL_LIST_FAILED',
+                message: err.message || 'Failed to list models',
+                requestId: msg.id,
+              })
+            );
+          }
+          break;
+        }
+
+        // ==========================================
+        // Permission Handlers
+        // ==========================================
+        case 'PERMISSION_LIST': {
+          try {
+            const permissions = await this.adapter.listPermissions();
+            this.sendMessage(
+              createMessage('PERMISSION_LIST_RESULT', {
+                deviceId: this.config.deviceId,
+                permissions,
+              }, msg.id)
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage('PERMISSION_LIST_RESULT', {
+                deviceId: this.config.deviceId,
+                permissions: [],
+              }, msg.id)
+            );
+          }
+          break;
+        }
+
+        case 'PERMISSION_REPLY': {
+          try {
+            const success = await this.adapter.replyPermission(msg.payload.requestId, msg.payload.reply);
+            this.sendMessage(
+              createMessage('PERMISSION_REPLY_RESULT', {
+                deviceId: this.config.deviceId,
+                requestId: msg.payload.requestId,
+                success,
+              }, msg.id)
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage('PERMISSION_REPLY_RESULT', {
+                deviceId: this.config.deviceId,
+                requestId: msg.payload.requestId,
+                success: false,
+              }, msg.id)
             );
           }
           break;

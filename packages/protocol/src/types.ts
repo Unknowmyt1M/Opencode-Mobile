@@ -381,3 +381,147 @@ export interface WorkspaceGetResultPayload {
   project?: ProjectContext;
 }
 
+// ==========================================
+// Phase 3 Redesign: Real PTY Terminal Payloads
+// ==========================================
+export interface PtySession {
+  id: string;
+  title: string;
+  command: string;
+  args?: string[];
+  cwd?: string;
+  status: string;
+  pid?: number;
+}
+
+export interface PtyCreatePayload {
+  deviceId: string;
+  deviceToken?: string;
+  title?: string;
+  command?: string;
+  args?: string[];
+  cwd?: string;
+}
+
+export interface PtyCreateResultPayload {
+  deviceId: string;
+  pty: PtySession;
+}
+
+export interface PtyListPayload {
+  deviceId: string;
+  deviceToken?: string;
+}
+
+export interface PtyListResultPayload {
+  deviceId: string;
+  ptys: PtySession[];
+}
+
+export interface PtyInputPayload {
+  deviceId: string;
+  deviceToken?: string;
+  ptyId: string;
+  data: string;
+}
+
+export interface PtyOutputPayload {
+  deviceId: string;
+  ptyId: string;
+  data: string;
+}
+
+export interface PtyResizePayload {
+  deviceId: string;
+  deviceToken?: string;
+  ptyId: string;
+  cols: number;
+  rows: number;
+}
+
+export interface PtyClosePayload {
+  deviceId: string;
+  deviceToken?: string;
+  ptyId: string;
+}
+
+export interface PtyClosedPayload {
+  deviceId: string;
+  ptyId: string;
+}
+
+// ==========================================
+// Phase 3 Redesign: Session Abort Payloads
+// ==========================================
+export interface SessionAbortPayload {
+  deviceId: string;
+  deviceToken?: string;
+  sessionId: string;
+}
+
+export interface SessionAbortResultPayload {
+  deviceId: string;
+  sessionId: string;
+  success: boolean;
+}
+
+// ==========================================
+// Phase 3 Redesign: Models & Providers Discovery Payloads
+// ==========================================
+export interface ModelInfo {
+  id: string;
+  name: string;
+  providerId: string;
+  providerName?: string;
+}
+
+export interface ModelListPayload {
+  deviceId: string;
+  deviceToken?: string;
+}
+
+export interface ModelListResultPayload {
+  deviceId: string;
+  models: ModelInfo[];
+  defaultModel?: {
+    providerID: string;
+    modelID: string;
+  };
+}
+
+// ==========================================
+// Phase 3 Redesign: Interactive Permissions & Questions
+// ==========================================
+export interface PermissionItem {
+  id: string;
+  title?: string;
+  pattern?: string;
+  command?: string;
+  sessionID?: string;
+  time?: number;
+}
+
+export interface PermissionListPayload {
+  deviceId: string;
+  deviceToken?: string;
+}
+
+export interface PermissionListResultPayload {
+  deviceId: string;
+  permissions: PermissionItem[];
+}
+
+export interface PermissionReplyPayload {
+  deviceId: string;
+  deviceToken?: string;
+  requestId: string;
+  reply: 'allow' | 'deny';
+}
+
+export interface PermissionReplyResultPayload {
+  deviceId: string;
+  requestId: string;
+  success: boolean;
+}
+
+
