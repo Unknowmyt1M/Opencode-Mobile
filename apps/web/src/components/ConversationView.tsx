@@ -229,67 +229,68 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
             {messages.map((msg) => {
               const reasoningParts = (msg.parts || []).filter((p) => p.type === 'reasoning');
               const toolParts = (msg.parts || []).filter((p) => p.type === 'tool');
+              const cleanContent = msg.content
+                .replace(/<supermemory-recall>[\s\S]*?<\/supermemory-recall>/gi, '')
+                .trim();
 
+              if (msg.role === 'user') {
+                return (
+                  <div key={msg.id} className="flex flex-col items-end w-full">
+                    <div className="max-w-[88%] sm:max-w-[80%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-md shadow-indigo-600/20 bg-indigo-600 text-white whitespace-pre-wrap select-text">
+                      {cleanContent}
+                    </div>
+                  </div>
+                );
+              }
+
+              // Agent message: Clean unboxed presentation
               return (
-                <div
-                  key={msg.id}
-                  className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}
-                >
-                  <div
-                    className={`max-w-[92%] sm:max-w-[85%] rounded-2xl p-3.5 text-xs leading-relaxed shadow-sm ${
-                      msg.role === 'user'
-                        ? 'bg-indigo-600 text-white shadow-indigo-600/20'
-                        : 'bg-slate-900/90 border border-slate-800 text-slate-200'
-                    }`}
-                  >
-                    {/* Collapsible reasoning if present */}
-                    {reasoningParts.map((rp, rIdx) => (
+                <div key={msg.id} className="flex flex-col items-start w-full space-y-2 py-0.5">
+                  {/* Collapsible reasoning if present */}
+                  {reasoningParts.map((rp, rIdx) => (
+                    <div key={rp.id || rIdx} className="w-full max-w-3xl">
                       <ReasoningView
-                        key={rp.id || rIdx}
                         reasoning={rp.text || ''}
                         duration={rp.duration}
                       />
-                    ))}
+                    </div>
+                  ))}
 
-                    {/* Tool execution cards if present */}
-                    {toolParts.length > 0 && (
-                      <div className="my-2 space-y-1.5">
-                        {toolParts.map((tp, tIdx) => (
-                          <ToolExecutionCard
-                            key={tp.callID || tp.id || tIdx}
-                            part={tp}
-                            diffs={diffs}
-                            onViewFile={(f) => {
-                              onSelectDiffFile(f);
-                              onSelectTab('review');
-                            }}
-                          />
-                        ))}
-                      </div>
-                    )}
+                  {/* Tool execution cards if present */}
+                  {toolParts.length > 0 && (
+                    <div className="w-full max-w-3xl space-y-1.5">
+                      {toolParts.map((tp, tIdx) => (
+                        <ToolExecutionCard
+                          key={tp.callID || tp.id || tIdx}
+                          part={tp}
+                          diffs={diffs}
+                          onViewFile={(f) => {
+                            onSelectDiffFile(f);
+                            onSelectTab('review');
+                          }}
+                        />
+                      ))}
+                    </div>
+                  )}
 
-                    {/* Main text content */}
-                    {(() => {
-                      const cleanContent = msg.content
-                        .replace(/<supermemory-recall>[\s\S]*?<\/supermemory-recall>/gi, '')
-                        .trim();
-                      return cleanContent ? (
-                        <div className="whitespace-pre-wrap select-text">{cleanContent}</div>
-                      ) : null;
-                    })()}
-                  </div>
+                  {/* Main text content without background box */}
+                  {cleanContent ? (
+                    <div className="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap select-text px-1 py-1 w-full max-w-3xl font-sans">
+                      {cleanContent}
+                    </div>
+                  ) : null}
                 </div>
               );
             })}
 
-            {/* Live Streaming Assistant Output */}
+            {/* Live Streaming Assistant Output without box */}
             {streamingText && (
-              <div className="flex flex-col items-start">
-                <div className="flex items-center gap-1 text-[10px] text-amber-400 font-mono mb-1 px-1">
+              <div className="flex flex-col items-start w-full space-y-1 py-1">
+                <div className="flex items-center gap-1 text-[10px] text-amber-400 font-mono px-1">
                   <Sparkles className="w-3 h-3 animate-spin" />
                   <span>OpenCode reasoning & drafting...</span>
                 </div>
-                <div className="max-w-[92%] sm:max-w-[85%] rounded-2xl p-3.5 text-xs leading-relaxed whitespace-pre-wrap bg-slate-900/90 border border-indigo-500/40 text-slate-100 shadow-lg">
+                <div className="text-xs text-slate-100 leading-relaxed whitespace-pre-wrap select-text px-1 w-full max-w-3xl">
                   {streamingText}
                   <span className="inline-block w-1.5 h-3.5 ml-1 bg-indigo-400 animate-pulse align-middle" />
                 </div>
@@ -330,12 +331,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
           <AgentActivityView messages={messages} isStreaming={isStreaming} />
         )}
 
-        {/* Jump to bottom button */}
+        {/* Jump to bottom button - Floating pill properly positioned */}
         {(activeTab === 'chat' || hideTabs) && showScrollBottom && (
           <button
             type="button"
             onClick={scrollToBottom}
-            className="sticky bottom-3 left-1/2 -translate-x-1/2 px-3.5 py-1.5 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium shadow-xl flex items-center gap-1 transition-all z-10 cursor-pointer"
+            className="absolute bottom-4 left-1/2 -translate-x-1/2 px-3.5 py-1.5 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-2xl flex items-center gap-1.5 transition-all z-30 cursor-pointer pointer-events-auto border border-indigo-400/30 whitespace-nowrap"
           >
             <span>Jump to latest</span>
             <ChevronDown className="w-3.5 h-3.5" />

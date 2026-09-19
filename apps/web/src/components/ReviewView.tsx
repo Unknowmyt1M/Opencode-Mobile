@@ -10,6 +10,7 @@ import {
   Check,
   FileCode,
   CheckCircle2,
+  WrapText,
 } from 'lucide-react';
 import type { SnapshotFileDiff } from '@opencode-remote/protocol';
 
@@ -148,6 +149,23 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedFile, setCopiedFile] = useState<string | null>(null);
   const [copiedPatch, setCopiedPatch] = useState(false);
+  const [wrapText, setWrapText] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('opencode_diff_wrap') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleWrapText = () => {
+    setWrapText((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('opencode_diff_wrap', String(next));
+      } catch {}
+      return next;
+    });
+  };
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => {
     // Expand top folders by default
     const set = new Set<string>();
@@ -416,6 +434,20 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
                   <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       type="button"
+                      onClick={toggleWrapText}
+                      className={`px-2 py-1 rounded transition-colors flex items-center gap-1 text-[10px] font-mono cursor-pointer border ${
+                        wrapText
+                          ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50 font-semibold'
+                          : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border-transparent'
+                      }`}
+                      title={wrapText ? 'Line wrapping enabled (tap to disable)' : 'Line wrapping disabled (tap to enable)'}
+                    >
+                      <WrapText className="w-3 h-3" />
+                      <span>{wrapText ? 'Wrap: On' : 'Wrap'}</span>
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={() => handleCopyPath(selectedDiff.file)}
                       className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors flex items-center gap-1 text-[10px] font-mono cursor-pointer"
                       title="Copy file path"
@@ -463,7 +495,7 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
                       Binary file or empty patch payload
                     </div>
                   ) : (
-                    <div className="min-w-fit">
+                    <div className={wrapText ? 'w-full' : 'min-w-fit'}>
                       {parsedDiffLines.map((line, idx) => {
                         if (line.type === 'hunk') {
                           return (
@@ -498,7 +530,7 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
                               {isAdd ? '+' : isDel ? '-' : ' '}
                             </span>
                             {/* Content */}
-                            <span className="flex-1 whitespace-pre font-mono pr-4">
+                            <span className={`flex-1 font-mono pr-4 ${wrapText ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}`}>
                               {line.text}
                             </span>
                           </div>
