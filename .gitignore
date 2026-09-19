@@ -1,0 +1,12 @@
+node_modules
+dist
+build
+.agent-config.json
+.env
+.env.local
+*.log
+.*-store.json
+.*-relay-store.json
+.live-relay-store*.json
+.DS_Store
+Thumbs.db

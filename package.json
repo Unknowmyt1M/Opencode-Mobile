@@ -1,0 +1,21 @@
+{
+  "name": "opencode-mobile-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --parallel --filter \"@opencode-remote/*\" dev",
+    "dev:relay": "pnpm --filter @opencode-remote/relay dev",
+    "dev:agent": "pnpm --filter @opencode-remote/agent dev",
+    "dev:web": "pnpm --filter @opencode-remote/web dev",
+    "build": "pnpm -r build",
+    "test": "vitest run",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.7",
+    "ws": "^8.18.1"
+  }
+}
