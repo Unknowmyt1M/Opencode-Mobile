@@ -6,11 +6,11 @@ import {
   ChevronDown,
   Search,
   RefreshCw,
-  Copy,
-  Check,
   FileCode,
   CheckCircle2,
   WrapText,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import type { SnapshotFileDiff } from '@opencode-remote/protocol';
 
@@ -147,8 +147,8 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
   onRefresh,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [copiedFile, setCopiedFile] = useState<string | null>(null);
-  const [copiedPatch, setCopiedPatch] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [isDiffCollapsed, setIsDiffCollapsed] = useState(false);
   const [wrapText, setWrapText] = useState<boolean>(() => {
     try {
       return localStorage.getItem('opencode_diff_wrap') === 'true';
@@ -211,18 +211,6 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
 
   const totalAdditions = useMemo(() => diffs.reduce((acc, d) => acc + d.additions, 0), [diffs]);
   const totalDeletions = useMemo(() => diffs.reduce((acc, d) => acc + d.deletions, 0), [diffs]);
-
-  const handleCopyPath = (filePath: string) => {
-    navigator.clipboard.writeText(filePath);
-    setCopiedFile(filePath);
-    setTimeout(() => setCopiedFile(null), 2000);
-  };
-
-  const handleCopyPatch = (patchText: string) => {
-    navigator.clipboard.writeText(patchText);
-    setCopiedPatch(true);
-    setTimeout(() => setCopiedPatch(false), 2000);
-  };
 
   // Parse patch with line numbers
   const parsedDiffLines = useMemo(() => {
@@ -401,14 +389,16 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
         </div>
       ) : (
         <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-          {/* Review Tree Sidebar */}
-          <div className="w-full md:w-64 lg:w-72 border-b md:border-b-0 md:border-r border-slate-800 overflow-y-auto max-h-56 md:max-h-full shrink-0 bg-slate-950/40 p-2 space-y-0.5 scrollbar-thin scrollbar-thumb-slate-800">
-            {tree.children.length === 0 ? (
-              <div className="p-4 text-center text-slate-500 text-xs font-mono">No matching files</div>
-            ) : (
-              tree.children.map((child) => renderTreeNode(child))
-            )}
-          </div>
+          {/* Review Tree Sidebar (collapses when isExpanded is true) */}
+          {!isExpanded && (
+            <div className="w-full md:w-64 lg:w-72 border-b md:border-b-0 md:border-r border-slate-800 overflow-y-auto max-h-56 md:max-h-full shrink-0 bg-slate-950/40 p-2 space-y-0.5 scrollbar-thin scrollbar-thumb-slate-800">
+              {tree.children.length === 0 ? (
+                <div className="p-4 text-center text-slate-500 text-xs font-mono">No matching files</div>
+              ) : (
+                tree.children.map((child) => renderTreeNode(child))
+              )}
+            </div>
+          )}
 
           {/* Diff Viewer Area */}
           <div className="flex-1 flex flex-col overflow-hidden bg-[#090d16]">
@@ -416,9 +406,18 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
               <>
                 {/* Diff Header */}
                 <div className="flex items-center justify-between px-3.5 py-2 bg-slate-900/80 border-b border-slate-800 text-xs shrink-0 select-none">
-                  <div className="flex items-center gap-2 min-w-0 pr-2">
+                  <div
+                    onClick={() => setIsDiffCollapsed((prev) => !prev)}
+                    className="flex items-center gap-2 min-w-0 pr-2 cursor-pointer group flex-1"
+                    title={isDiffCollapsed ? 'Expand diff body' : 'Collapse diff body'}
+                  >
+                    {isDiffCollapsed ? (
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-white transition-transform shrink-0" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5 text-slate-400 group-hover:text-white transition-transform shrink-0" />
+                    )}
                     <FileCode className="w-4 h-4 text-indigo-400 shrink-0" />
-                    <span className="font-mono text-slate-200 font-medium truncate text-xs">
+                    <span className="font-mono text-slate-200 font-medium truncate text-xs group-hover:text-white">
                       {selectedDiff.file}
                     </span>
                     <div className="flex items-center gap-1 font-mono text-[11px] shrink-0 ml-1">
@@ -446,56 +445,32 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
                       <span>{wrapText ? 'Wrap: On' : 'Wrap'}</span>
                     </button>
 
+                    {/* Expand/Collapse Fullscreen Toggle Icon Button */}
                     <button
                       type="button"
-                      onClick={() => handleCopyPath(selectedDiff.file)}
-                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors flex items-center gap-1 text-[10px] font-mono cursor-pointer"
-                      title="Copy file path"
+                      onClick={() => setIsExpanded((prev) => !prev)}
+                      className="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer border border-slate-700/50"
+                      title={isExpanded ? 'Collapse view (show file tree)' : 'Expand view (full screen)'}
+                      aria-label={isExpanded ? 'Collapse view' : 'Expand view'}
                     >
-                      {copiedFile === selectedDiff.file ? (
-                        <>
-                          <Check className="w-3 h-3 text-emerald-400" />
-                          <span className="text-emerald-400">Path Copied</span>
-                        </>
+                      {isExpanded ? (
+                        <Minimize2 className="w-3.5 h-3.5 text-indigo-400" />
                       ) : (
-                        <>
-                          <Copy className="w-3 h-3" />
-                          <span>Path</span>
-                        </>
+                        <Maximize2 className="w-3.5 h-3.5" />
                       )}
                     </button>
-
-                    {selectedDiff.patch && (
-                      <button
-                        type="button"
-                        onClick={() => handleCopyPatch(selectedDiff.patch!)}
-                        className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors flex items-center gap-1 text-[10px] font-mono cursor-pointer"
-                        title="Copy unified diff patch"
-                      >
-                        {copiedPatch ? (
-                          <>
-                            <Check className="w-3 h-3 text-emerald-400" />
-                            <span className="text-emerald-400">Patch Copied</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3 h-3" />
-                            <span>Patch</span>
-                          </>
-                        )}
-                      </button>
-                    )}
                   </div>
                 </div>
 
-                {/* Diff Body Lines with Gutter Line Numbers */}
-                <div className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-5 select-text scrollbar-thin scrollbar-thumb-slate-800">
-                  {parsedDiffLines.length === 0 ? (
-                    <div className="p-8 text-center text-slate-500 text-xs">
-                      Binary file or empty patch payload
-                    </div>
-                  ) : (
-                    <div className={wrapText ? 'w-full' : 'min-w-fit'}>
+                {/* Diff Body Lines with Gutter Line Numbers (collapsible) */}
+                {!isDiffCollapsed && (
+                  <div className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-5 select-text scrollbar-thin scrollbar-thumb-slate-800">
+                    {parsedDiffLines.length === 0 ? (
+                      <div className="p-8 text-center text-slate-500 text-xs">
+                        Binary file or empty patch payload
+                      </div>
+                    ) : (
+                      <div className={wrapText ? 'w-full' : 'min-w-fit'}>
                       {parsedDiffLines.map((line, idx) => {
                         if (line.type === 'hunk') {
                           return (
@@ -538,7 +513,8 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
                       })}
                     </div>
                   )}
-                </div>
+                  </div>
+                )}
               </>
             ) : (
               <div className="flex-1 flex items-center justify-center text-slate-500 text-xs font-mono">
