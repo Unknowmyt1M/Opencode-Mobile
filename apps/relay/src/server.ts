@@ -54,6 +54,16 @@ export function buildRelayServer(options: RelayOptions = {}): {
       let registeredDeviceId: string | null = null;
       let registeredClientId: string | null = null;
 
+      const ensureClientAuthorized = (devId: string, tok?: string) => {
+        if (!tok) return;
+        const c = registeredClientId
+          ? { clientId: registeredClientId }
+          : registry.findClientBySocket(socket);
+        if (c) {
+          registry.addClientDeviceToken(c.clientId, devId, tok);
+        }
+      };
+
       app.log.info({ connectionId }, '[relay] incoming websocket connection');
 
       socket.on('message', (rawData) => {
@@ -116,10 +126,12 @@ export function buildRelayServer(options: RelayOptions = {}): {
             }
 
             case 'CLIENT_HELLO': {
-              const { clientId, clientVersion, pairedDeviceTokens } = message.payload;
+              const { clientId, clientVersion } = message.payload;
+              const pairedTokens =
+                message.payload.pairedDeviceTokens || (message.payload as any).tokens;
               registeredClientId = clientId;
 
-              registry.registerClient(clientId, clientVersion, socket, pairedDeviceTokens);
+              registry.registerClient(clientId, clientVersion, socket, pairedTokens);
 
               const ack = createMessage('CLIENT_HELLO_ACK', {
                 success: true,
@@ -255,18 +267,20 @@ export function buildRelayServer(options: RelayOptions = {}): {
                   deviceToken,
                 });
 
-                // Send directly to the client socket that initiated pairing
+                // Send directly to the client socket that initiated pairing ONLY
                 const directClientSocket = pairingToClient.get(pairingId);
                 if (directClientSocket && directClientSocket.readyState === WebSocket.OPEN) {
                   try {
                     directClientSocket.send(JSON.stringify(completeMsg));
                   } catch {}
+                  const client = registry.findClientBySocket(directClientSocket);
+                  if (client) {
+                    registry.addClientDeviceToken(client.clientId, record.deviceId, deviceToken);
+                  }
                 }
                 pairingToClient.delete(pairingId);
 
-                registry.broadcastToClients(completeMsg);
-
-                // Broadcast updated device status
+                // Broadcast updated device status (public status only, no token)
                 const dev = registry.getDevice(record.deviceId);
                 if (dev) {
                   registry.broadcastToClients(createMessage('DEVICE_STATUS', dev));
@@ -351,6 +365,8 @@ export function buildRelayServer(options: RelayOptions = {}): {
                 return;
               }
 
+              ensureClientAuthorized(deviceId, deviceToken);
+
               const agentSocket = registry.getAgentSocket(deviceId);
               if (!agentSocket || agentSocket.readyState !== WebSocket.OPEN) {
                 socket.send(
@@ -375,8 +391,12 @@ export function buildRelayServer(options: RelayOptions = {}): {
               if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
                 clientSocket.send(JSON.stringify(message));
                 requestToClient.delete(message.id);
-              } else {
-                registry.broadcastToClients(message);
+              } else if (message.payload?.deviceId) {
+                registry.broadcastToAuthorizedClients(
+                  message.payload.deviceId,
+                  message,
+                  (d, t) => store.verifyDeviceToken(d, t)
+                );
               }
               break;
             }
@@ -395,6 +415,8 @@ export function buildRelayServer(options: RelayOptions = {}): {
                 );
                 return;
               }
+
+              ensureClientAuthorized(deviceId, deviceToken);
 
               const agentSocket = registry.getAgentSocket(deviceId);
               if (!agentSocket || agentSocket.readyState !== WebSocket.OPEN) {
@@ -420,8 +442,12 @@ export function buildRelayServer(options: RelayOptions = {}): {
               if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
                 clientSocket.send(JSON.stringify(message));
                 requestToClient.delete(message.id);
-              } else {
-                registry.broadcastToClients(message);
+              } else if (message.payload?.deviceId) {
+                registry.broadcastToAuthorizedClients(
+                  message.payload.deviceId,
+                  message,
+                  (d, t) => store.verifyDeviceToken(d, t)
+                );
               }
               break;
             }
@@ -440,6 +466,8 @@ export function buildRelayServer(options: RelayOptions = {}): {
                 );
                 return;
               }
+
+              ensureClientAuthorized(deviceId, deviceToken);
 
               const agentSocket = registry.getAgentSocket(deviceId);
               if (!agentSocket || agentSocket.readyState !== WebSocket.OPEN) {
@@ -465,8 +493,12 @@ export function buildRelayServer(options: RelayOptions = {}): {
               if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
                 clientSocket.send(JSON.stringify(message));
                 requestToClient.delete(message.id);
-              } else {
-                registry.broadcastToClients(message);
+              } else if (message.payload?.deviceId) {
+                registry.broadcastToAuthorizedClients(
+                  message.payload.deviceId,
+                  message,
+                  (d, t) => store.verifyDeviceToken(d, t)
+                );
               }
               break;
             }
@@ -485,6 +517,8 @@ export function buildRelayServer(options: RelayOptions = {}): {
                 );
                 return;
               }
+
+              ensureClientAuthorized(deviceId, deviceToken);
 
               const agentSocket = registry.getAgentSocket(deviceId);
               if (!agentSocket || agentSocket.readyState !== WebSocket.OPEN) {
@@ -510,8 +544,12 @@ export function buildRelayServer(options: RelayOptions = {}): {
               if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
                 clientSocket.send(JSON.stringify(message));
                 requestToClient.delete(message.id);
-              } else {
-                registry.broadcastToClients(message);
+              } else if (message.payload?.deviceId) {
+                registry.broadcastToAuthorizedClients(
+                  message.payload.deviceId,
+                  message,
+                  (d, t) => store.verifyDeviceToken(d, t)
+                );
               }
               break;
             }
@@ -530,6 +568,8 @@ export function buildRelayServer(options: RelayOptions = {}): {
                 );
                 return;
               }
+
+              ensureClientAuthorized(deviceId, deviceToken);
 
               const agentSocket = registry.getAgentSocket(deviceId);
               if (!agentSocket || agentSocket.readyState !== WebSocket.OPEN) {
@@ -555,8 +595,12 @@ export function buildRelayServer(options: RelayOptions = {}): {
               if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
                 clientSocket.send(JSON.stringify(message));
                 requestToClient.delete(message.id);
-              } else {
-                registry.broadcastToClients(message);
+              } else if (message.payload?.deviceId) {
+                registry.broadcastToAuthorizedClients(
+                  message.payload.deviceId,
+                  message,
+                  (d, t) => store.verifyDeviceToken(d, t)
+                );
               }
               break;
             }
@@ -575,6 +619,8 @@ export function buildRelayServer(options: RelayOptions = {}): {
                 );
                 return;
               }
+
+              ensureClientAuthorized(deviceId, deviceToken);
 
               const agentSocket = registry.getAgentSocket(deviceId);
               if (!agentSocket || agentSocket.readyState !== WebSocket.OPEN) {
@@ -600,21 +646,41 @@ export function buildRelayServer(options: RelayOptions = {}): {
               if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
                 clientSocket.send(JSON.stringify(message));
                 requestToClient.delete(message.id);
-              } else {
-                registry.broadcastToClients(message);
+              } else if (message.payload?.deviceId) {
+                registry.broadcastToAuthorizedClients(
+                  message.payload.deviceId,
+                  message,
+                  (d, t) => store.verifyDeviceToken(d, t)
+                );
               }
               break;
             }
 
-            // Streamed deltas, completion, and events broadcast to all connected clients
+            // Streamed deltas, completion, and events broadcast only to authorized clients
             case 'MESSAGE_STARTED':
             case 'MESSAGE_DELTA':
             case 'MESSAGE_COMPLETED':
             case 'MESSAGE_ERROR':
             case 'OPENCODE_EVENT':
+            case 'PERMISSION_REQUEST':
             case 'PTY_OUTPUT':
             case 'PTY_CLOSED': {
-              registry.broadcastToClients(message);
+              const { deviceId } = message.payload as { deviceId?: string };
+              if (deviceId) {
+                if (message.type === 'PTY_CLOSED' && (message.payload as any).ptyId) {
+                  registry.unregisterPty((message.payload as any).ptyId);
+                } else if (message.type === 'PTY_OUTPUT' && (message.payload as any).ptyId) {
+                  if (!registry.getPty((message.payload as any).ptyId)) {
+                    registry.registerPty((message.payload as any).ptyId, deviceId);
+                  }
+                }
+
+                registry.broadcastToAuthorizedClients(
+                  deviceId,
+                  message,
+                  (devId, token) => store.verifyDeviceToken(devId, token)
+                );
+              }
               break;
             }
 
@@ -639,6 +705,8 @@ export function buildRelayServer(options: RelayOptions = {}): {
                 return;
               }
 
+              ensureClientAuthorized(deviceId, deviceToken);
+
               const agentSocket = registry.getAgentSocket(deviceId);
               if (!agentSocket || agentSocket.readyState !== WebSocket.OPEN) {
                 socket.send(
@@ -658,8 +726,46 @@ export function buildRelayServer(options: RelayOptions = {}): {
               break;
             }
 
-            case 'PTY_CREATE_RESULT':
-            case 'PTY_LIST_RESULT':
+            case 'PTY_CREATE_RESULT': {
+              if (message.payload?.pty?.id && message.payload?.deviceId) {
+                registry.registerPty(message.payload.pty.id, message.payload.deviceId);
+              }
+              const clientSocket = requestToClient.get(message.id);
+              if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
+                clientSocket.send(JSON.stringify(message));
+                requestToClient.delete(message.id);
+              } else if (message.payload?.deviceId) {
+                registry.broadcastToAuthorizedClients(
+                  message.payload.deviceId,
+                  message,
+                  (d, t) => store.verifyDeviceToken(d, t)
+                );
+              }
+              break;
+            }
+
+            case 'PTY_LIST_RESULT': {
+              if (Array.isArray(message.payload?.ptys) && message.payload?.deviceId) {
+                for (const p of message.payload.ptys) {
+                  if (p?.id) {
+                    registry.registerPty(p.id, message.payload.deviceId);
+                  }
+                }
+              }
+              const clientSocket = requestToClient.get(message.id);
+              if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
+                clientSocket.send(JSON.stringify(message));
+                requestToClient.delete(message.id);
+              } else if (message.payload?.deviceId) {
+                registry.broadcastToAuthorizedClients(
+                  message.payload.deviceId,
+                  message,
+                  (d, t) => store.verifyDeviceToken(d, t)
+                );
+              }
+              break;
+            }
+
             case 'SESSION_ABORT_RESULT':
             case 'MODEL_LIST_RESULT':
             case 'PERMISSION_LIST_RESULT':
@@ -668,8 +774,12 @@ export function buildRelayServer(options: RelayOptions = {}): {
               if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
                 clientSocket.send(JSON.stringify(message));
                 requestToClient.delete(message.id);
-              } else {
-                registry.broadcastToClients(message);
+              } else if (message.payload?.deviceId) {
+                registry.broadcastToAuthorizedClients(
+                  message.payload.deviceId,
+                  message,
+                  (d, t) => store.verifyDeviceToken(d, t)
+                );
               }
               break;
             }
@@ -677,13 +787,46 @@ export function buildRelayServer(options: RelayOptions = {}): {
             case 'PTY_INPUT':
             case 'PTY_RESIZE':
             case 'PTY_CLOSE': {
-              const { deviceId, deviceToken } = message.payload as { deviceId: string; deviceToken?: string };
+              const { deviceId, deviceToken, ptyId } = message.payload as {
+                deviceId: string;
+                deviceToken?: string;
+                ptyId: string;
+              };
               if (!store.verifyDeviceToken(deviceId, deviceToken)) {
                 socket.send(
                   JSON.stringify(
                     createMessage('ERROR', {
                       code: 'DEVICE_NOT_AUTHORIZED',
                       message: 'Access denied: invalid or revoked device token',
+                      requestId: message.id,
+                    })
+                  )
+                );
+                return;
+              }
+
+              ensureClientAuthorized(deviceId, deviceToken);
+
+              const pty = registry.getPty(ptyId);
+              if (!pty) {
+                socket.send(
+                  JSON.stringify(
+                    createMessage('ERROR', {
+                      code: 'PTY_NOT_FOUND',
+                      message: `PTY session ${ptyId} not found`,
+                      requestId: message.id,
+                    })
+                  )
+                );
+                return;
+              }
+
+              if (pty.deviceId !== deviceId) {
+                socket.send(
+                  JSON.stringify(
+                    createMessage('ERROR', {
+                      code: 'PTY_ACCESS_DENIED',
+                      message: `PTY session ${ptyId} does not belong to device ${deviceId}`,
                       requestId: message.id,
                     })
                   )
@@ -744,6 +887,7 @@ export function buildRelayServer(options: RelayOptions = {}): {
 
       socket.on('close', () => {
         if (registeredDeviceId) {
+          registry.clearPtysForDevice(registeredDeviceId);
           const device = registry.unregisterAgent(registeredDeviceId, socket);
           if (device) {
             registry.broadcastToClients(createMessage('DEVICE_STATUS', device));

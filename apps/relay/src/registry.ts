@@ -30,9 +30,17 @@ export interface ConnectedClient {
   socket: WebSocket;
 }
 
+export interface PtyTrackingRecord {
+  ptyId: string;
+  deviceId: string;
+  clientId?: string;
+  createdAt: number;
+}
+
 export class DeviceRegistry {
   private devices = new Map<string, RegisteredDevice>();
   private clients = new Map<string, ConnectedClient>();
+  private ptys = new Map<string, PtyTrackingRecord>();
 
   registerAgent(
     deviceId: string,
@@ -209,8 +217,59 @@ export class DeviceRegistry {
     }
   }
 
+  broadcastToAuthorizedClients(
+    deviceId: string,
+    message: ProtocolMessage,
+    isAuthorized?: (deviceId: string, token?: string) => boolean
+  ): void {
+    const payloadStr = JSON.stringify(message);
+    for (const client of this.clients.values()) {
+      if (client.socket.readyState === 1) {
+        const token = client.pairedDeviceTokens.get(deviceId);
+        const authorized = isAuthorized
+          ? isAuthorized(deviceId, token)
+          : Boolean(token);
+        if (authorized) {
+          try {
+            client.socket.send(payloadStr);
+          } catch {}
+        }
+      }
+    }
+  }
+
+  registerPty(ptyId: string, deviceId: string, clientId?: string): void {
+    this.ptys.set(ptyId, {
+      ptyId,
+      deviceId,
+      clientId,
+      createdAt: Date.now(),
+    });
+  }
+
+  unregisterPty(ptyId: string): boolean {
+    return this.ptys.delete(ptyId);
+  }
+
+  getPty(ptyId: string): PtyTrackingRecord | undefined {
+    return this.ptys.get(ptyId);
+  }
+
+  getPtysForDevice(deviceId: string): PtyTrackingRecord[] {
+    return Array.from(this.ptys.values()).filter((p) => p.deviceId === deviceId);
+  }
+
+  clearPtysForDevice(deviceId: string): void {
+    for (const [id, p] of this.ptys.entries()) {
+      if (p.deviceId === deviceId) {
+        this.ptys.delete(id);
+      }
+    }
+  }
+
   clear(): void {
     this.devices.clear();
     this.clients.clear();
+    this.ptys.clear();
   }
 }
