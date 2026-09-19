@@ -272,7 +272,10 @@ export default function App() {
               activeDiffFile={activeDiffFile}
               activeTab={activeTab}
               onSelectTab={setActiveTab}
-              onSelectDiffFile={setActiveDiffFile}
+              onSelectDiffFile={(file) => {
+                setActiveDiffFile(file);
+                setRightPanelTab('review');
+              }}
               onSendMessage={(content) =>
                 sendMessage(selectedDevice.deviceId, activeSession.session.id, content)
               }
@@ -434,7 +437,10 @@ export default function App() {
             activeDiffFile={activeDiffFile}
             activeTab={activeTab}
             onSelectTab={setActiveTab}
-            onSelectDiffFile={setActiveDiffFile}
+            onSelectDiffFile={(file) => {
+              setActiveDiffFile(file);
+              setActiveTab('review');
+            }}
             onSendMessage={(content) =>
               sendMessage(selectedDevice.deviceId, activeSession.session.id, content)
             }
