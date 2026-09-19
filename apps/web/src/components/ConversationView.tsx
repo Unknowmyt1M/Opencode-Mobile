@@ -213,15 +213,37 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
             className="flex-1 overflow-y-auto p-4 space-y-4"
           >
             {messages.length === 0 && !streamingText && (
-              <div className="flex flex-col items-center justify-center h-full text-center text-slate-500 p-8 space-y-3">
-                <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-800 text-indigo-400 flex items-center justify-center shadow-inner">
-                  <Sparkles className="w-6 h-6" />
+              <div className="flex flex-col items-center justify-center min-h-[60vh] text-center text-slate-500 p-4 sm:p-8 space-y-4 max-w-md mx-auto my-auto">
+                <div className="w-14 h-14 rounded-2xl bg-indigo-950/40 border border-indigo-500/30 text-indigo-400 flex items-center justify-center shadow-lg shadow-indigo-950/50">
+                  <Sparkles className="w-7 h-7" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-300">Ready to code</h3>
-                  <p className="text-xs text-slate-400 mt-1 max-w-xs leading-relaxed">
-                    Ask OpenCode to edit code, inspect repo changes, run commands, or explore architecture.
+                  <h3 className="text-sm font-semibold text-slate-200">Ready to code</h3>
+                  <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                    Ask OpenCode to build features, inspect repo diffs, run commands, or explore architecture.
                   </p>
+                </div>
+
+                {/* Quick Starter Action Chips */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full pt-1">
+                  {[
+                    { label: 'Explain project architecture', icon: '🔍', prompt: 'Explain the project architecture, directory structure, and main workflows.' },
+                    { label: 'Run test suite', icon: '🧪', prompt: 'Run the test suite and report any failing tests or errors.' },
+                    { label: 'Review git diff & status', icon: '📝', prompt: 'Inspect current git status and summarize modified or unstaged files.' },
+                    { label: 'Find potential optimizations', icon: '⚡', prompt: 'Audit the codebase for potential performance bottlenecks or optimizations.' },
+                  ].map((chip) => (
+                    <button
+                      key={chip.label}
+                      type="button"
+                      onClick={() => onSendMessage(chip.prompt)}
+                      className="p-3 rounded-2xl bg-slate-900/80 hover:bg-slate-850 border border-slate-800 hover:border-indigo-500/40 text-left transition-all group cursor-pointer shadow-sm active:scale-98"
+                    >
+                      <div className="flex items-center gap-2 text-xs font-medium text-slate-300 group-hover:text-white">
+                        <span className="text-sm">{chip.icon}</span>
+                        <span className="truncate">{chip.label}</span>
+                      </div>
+                    </button>
+                  ))}
                 </div>
               </div>
             )}

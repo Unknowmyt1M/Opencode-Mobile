@@ -8,6 +8,7 @@ import {
   CheckCircle,
   XCircle,
   Cpu,
+  X,
 } from 'lucide-react';
 import type { ModelInfo, PermissionItem } from '@opencode-remote/protocol';
 
@@ -74,7 +75,7 @@ export const Composer: React.FC<ComposerProps> = ({
   };
 
   return (
-    <div className="flex flex-col bg-slate-900/95 border-t border-slate-800/90 backdrop-blur-md shrink-0 relative z-30">
+    <div className="flex flex-col bg-slate-900/95 border-t border-slate-800/90 backdrop-blur-md shrink-0 relative z-30 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
       {/* Prominent Human-In-The-Loop Permission Banner */}
       {permissions.length > 0 && onReplyPermission && (
         <div className="px-3.5 py-2.5 bg-amber-950/40 border-b border-amber-800/60 flex flex-col gap-2 animate-in fade-in slide-in-from-top-2 duration-200">
@@ -203,15 +204,33 @@ export const Composer: React.FC<ComposerProps> = ({
 
       {/* Textarea Input Row */}
       <div className="p-3 pt-1 flex items-end gap-2.5">
-        <textarea
-          ref={textareaRef}
-          value={input}
-          onChange={handleInput}
-          onKeyDown={handleKeyDown}
-          placeholder={placeholder}
-          rows={1}
-          className="flex-1 min-h-[44px] max-h-44 resize-none rounded-xl bg-slate-950/90 border border-slate-800/90 px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 transition-all font-sans leading-relaxed"
-        />
+        <div className="relative flex-1">
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={handleInput}
+            onKeyDown={handleKeyDown}
+            placeholder={placeholder}
+            rows={1}
+            className="w-full min-h-[44px] max-h-44 resize-none rounded-xl bg-slate-950/90 border border-slate-800/90 pl-3.5 pr-8 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 transition-all font-sans leading-relaxed"
+          />
+          {input.length > 0 && !isStreaming && (
+            <button
+              type="button"
+              onClick={() => {
+                setInput('');
+                if (textareaRef.current) {
+                  textareaRef.current.style.height = 'auto';
+                  textareaRef.current.focus();
+                }
+              }}
+              className="absolute right-2.5 top-3 p-0.5 rounded-full text-slate-500 hover:text-slate-300 hover:bg-slate-800/80 transition-colors cursor-pointer"
+              title="Clear input"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
 
         {isStreaming ? (
           <button

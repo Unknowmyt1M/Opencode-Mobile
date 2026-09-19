@@ -107,11 +107,19 @@ export const XtermTerminal: React.FC<XtermTerminalProps> = ({
     };
   }, [activePtyId, onSendInput, onResize, subscribeData]);
 
+  const quickKeys = [
+    { label: 'Ctrl+C', cmd: '\x03', highlight: true },
+    { label: 'Esc', cmd: '\x1b' },
+    { label: 'Tab', cmd: '\t' },
+    { label: '↑', cmd: '\x1b[A' },
+    { label: '↓', cmd: '\x1b[B' },
+  ];
+
   const quickCommands = [
-    { label: 'ls', cmd: 'dir\r' },
     { label: 'git status', cmd: 'git status\r' },
+    { label: 'dir', cmd: 'dir\r' },
     { label: 'pnpm test', cmd: 'pnpm test\r' },
-    { label: 'clear', cmd: 'cls\r' },
+    { label: 'cls', cmd: 'cls\r' },
   ];
 
   return (
@@ -172,18 +180,38 @@ export const XtermTerminal: React.FC<XtermTerminalProps> = ({
 
       {/* Quick Action Bar */}
       {activePtyId && (
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900/50 border-b border-slate-800/60 overflow-x-auto text-[11px] scrollbar-none">
-          <span className="text-slate-500 font-semibold uppercase tracking-wider text-[10px]">Quick:</span>
-          {quickCommands.map((qc) => (
-            <button
-              key={qc.label}
-              type="button"
-              onClick={() => onSendInput(activePtyId, qc.cmd)}
-              className="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-indigo-300 font-mono transition-colors shrink-0 border border-slate-700/50"
-            >
-              {qc.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900/50 border-b border-slate-800/60 overflow-x-auto text-[11px] scrollbar-none select-none">
+          {/* Touch modifier keys */}
+          <div className="flex items-center gap-1 shrink-0 pr-1 border-r border-slate-800">
+            {quickKeys.map((qk) => (
+              <button
+                key={qk.label}
+                type="button"
+                onClick={() => onSendInput(activePtyId, qk.cmd)}
+                className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold transition-all shrink-0 cursor-pointer border active:scale-95 ${
+                  qk.highlight
+                    ? 'bg-rose-950/60 hover:bg-rose-900 text-rose-300 border-rose-800/60'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700/60'
+                }`}
+              >
+                {qk.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Common shortcuts */}
+          <div className="flex items-center gap-1.5 shrink-0 pl-1">
+            {quickCommands.map((qc) => (
+              <button
+                key={qc.label}
+                type="button"
+                onClick={() => onSendInput(activePtyId, qc.cmd)}
+                className="px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-indigo-300 font-mono transition-colors shrink-0 border border-slate-700/50 text-[10px] cursor-pointer active:scale-95"
+              >
+                {qc.label}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 

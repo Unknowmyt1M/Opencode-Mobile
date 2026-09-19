@@ -300,6 +300,18 @@ export default function App() {
               onRefreshPtys={fetchPtys}
               hideTabs={true}
             />
+          ) : selectedDevice && !selectedDevice.paired ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-8 max-w-md mx-auto w-full">
+              <Dashboard
+                device={selectedDevice}
+                sessions={sessions}
+                projectContext={projectContext}
+                onOpenSession={(sId) => openSession(selectedDevice.deviceId, sId)}
+                onCreateSession={(t) => createSession(selectedDevice.deviceId, t)}
+                onRefreshSessions={() => fetchSessions(selectedDevice.deviceId)}
+                onPairSubmit={pairDevice}
+              />
+            </div>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4">
               <div className="w-16 h-16 rounded-3xl bg-slate-900 border border-slate-800 flex items-center justify-center text-indigo-400 shadow-xl">
@@ -507,6 +519,7 @@ export default function App() {
                 onOpenSession={(sId) => selectedDevice && openSession(selectedDevice.deviceId, sId)}
                 onCreateSession={(t) => selectedDevice && createSession(selectedDevice.deviceId, t)}
                 onRefreshSessions={() => selectedDevice && fetchSessions(selectedDevice.deviceId)}
+                onPairSubmit={pairDevice}
               />
             </main>
           </div>

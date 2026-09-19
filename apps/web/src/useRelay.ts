@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   parseProtocolMessage,
   createMessage,
@@ -100,7 +100,14 @@ export function useRelay(relayWsUrl?: string) {
     (import.meta as any).env?.VITE_RELAY_WS_URL ||
     `${defaultWsProtocol}//${defaultWsHost}/ws`;
 
-  const selectedDevice = devices.find((d) => d.deviceId === selectedDeviceId) || devices[0];
+  const computedDevices = useMemo(() => {
+    return devices.map((d: DeviceInfo) => ({
+      ...d,
+      paired: Boolean(deviceTokens[d.deviceId]),
+    }));
+  }, [devices, deviceTokens]);
+
+  const selectedDevice = computedDevices.find((d: DeviceInfo) => d.deviceId === selectedDeviceId) || computedDevices[0];
 
   const deviceTokensRef = useRef(deviceTokens);
   deviceTokensRef.current = deviceTokens;
@@ -139,10 +146,12 @@ export function useRelay(relayWsUrl?: string) {
 
   const fetchSessionDiff = useCallback(
     async (deviceId: string, sessionId: string) => {
+      const token = deviceTokens[deviceId];
+      if (!token) return [];
       const msg = createMessage('SESSION_DIFF_GET', {
         deviceId,
         sessionId,
-        deviceToken: deviceTokens[deviceId],
+        deviceToken: token,
       });
       try {
         const res = await sendRpc<{ diffs: SnapshotFileDiff[] }>(msg);
@@ -163,9 +172,11 @@ export function useRelay(relayWsUrl?: string) {
 
   const fetchWorkspace = useCallback(
     async (deviceId: string) => {
+      const token = deviceTokens[deviceId];
+      if (!token) return null;
       const msg = createMessage('WORKSPACE_GET', {
         deviceId,
-        deviceToken: deviceTokens[deviceId],
+        deviceToken: token,
       });
       try {
         const res = await sendRpc<{ project?: ProjectContext }>(msg);
@@ -429,7 +440,14 @@ export function useRelay(relayWsUrl?: string) {
             }
 
             case 'ERROR': {
-              setLastError(`[${msg.payload.code}] ${msg.payload.message}`);
+              if (msg.payload.code === 'DEVICE_NOT_AUTHORIZED') {
+                if (selectedDeviceId) {
+                  removeDeviceToken(selectedDeviceId);
+                }
+                setLastError('Device authorization expired or not paired. Please enter the pairing code.');
+              } else {
+                setLastError(`[${msg.payload.code}] ${msg.payload.message}`);
+              }
               if (msg.payload.requestId && pendingRequests.current.has(msg.payload.requestId)) {
                 const resolver = pendingRequests.current.get(msg.payload.requestId);
                 pendingRequests.current.delete(msg.payload.requestId);
@@ -543,16 +561,23 @@ export function useRelay(relayWsUrl?: string) {
   // Sessions API
   const fetchSessions = useCallback(
     async (deviceId: string) => {
+      const token = deviceTokens[deviceId];
+      if (!token) {
+        setSessions([]);
+        return [];
+      }
       const msg = createMessage('SESSION_LIST', {
         deviceId,
-        deviceToken: deviceTokens[deviceId],
+        deviceToken: token,
       });
       try {
         const res = await sendRpc<{ sessions: OpenCodeSession[] }>(msg);
         setSessions(res.sessions || []);
         return res.sessions;
       } catch (err: any) {
-        setLastError(err.message);
+        if (!err.message?.includes('invalid or revoked')) {
+          setLastError(err.message);
+        }
         return [];
       }
     },
@@ -636,6 +661,10 @@ export function useRelay(relayWsUrl?: string) {
   const fetchPtys = useCallback(async () => {
     if (!selectedDevice) return;
     const token = deviceTokensRef.current[selectedDevice.deviceId];
+    if (!token) {
+      setPtys([]);
+      return;
+    }
     try {
       const res = await sendRpc<PtyListResultPayload>(
         createMessage('PTY_LIST', {
@@ -764,6 +793,10 @@ export function useRelay(relayWsUrl?: string) {
   const fetchModels = useCallback(async () => {
     if (!selectedDevice) return;
     const token = deviceTokensRef.current[selectedDevice.deviceId];
+    if (!token) {
+      setModels([]);
+      return;
+    }
     try {
       const res = await sendRpc<ModelListResultPayload>(
         createMessage('MODEL_LIST', {
@@ -786,6 +819,10 @@ export function useRelay(relayWsUrl?: string) {
   const fetchPermissions = useCallback(async () => {
     if (!selectedDevice) return;
     const token = deviceTokensRef.current[selectedDevice.deviceId];
+    if (!token) {
+      setPermissions([]);
+      return;
+    }
     try {
       const res = await sendRpc<PermissionListResultPayload>(
         createMessage('PERMISSION_LIST', {
@@ -834,7 +871,7 @@ export function useRelay(relayWsUrl?: string) {
 
   return {
     connectionState,
-    devices,
+    devices: computedDevices,
     selectedDevice,
     selectedDeviceId,
     setSelectedDeviceId,
