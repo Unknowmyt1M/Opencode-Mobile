@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Folder,
   FolderOpen,
@@ -11,6 +11,9 @@ import {
   WrapText,
   Maximize2,
   Minimize2,
+  ListTree,
+  List,
+  ChevronsUpDown,
 } from 'lucide-react';
 import type { SnapshotFileDiff } from '@opencode-remote/protocol';
 
@@ -166,20 +169,53 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
       return next;
     });
   };
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => {
-    // Expand top folders by default
+  // Collect all folder paths across all diffs to expand by default
+  const allFolderPaths = useMemo(() => {
     const set = new Set<string>();
     for (const d of diffs) {
       const parts = d.file.replace(/\\/g, '/').split('/');
-      if (parts.length > 1) {
-        set.add(parts[0]);
-        if (parts.length > 2) {
-          set.add(`${parts[0]}/${parts[1]}`);
-        }
+      let acc = '';
+      for (let i = 0; i < parts.length - 1; i++) {
+        acc = acc ? `${acc}/${parts[i]}` : parts[i];
+        set.add(acc);
       }
     }
     return set;
-  });
+  }, [diffs]);
+
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => allFolderPaths);
+  const [viewMode, setViewMode] = useState<'tree' | 'flat'>('tree');
+
+  // Auto-expand all folders whenever diffs arrive or update
+  useEffect(() => {
+    if (diffs.length > 0) {
+      setExpandedFolders((prev) => {
+        const next = new Set(prev);
+        for (const p of allFolderPaths) {
+          next.add(p);
+        }
+        return next;
+      });
+    }
+  }, [allFolderPaths, diffs.length]);
+
+  // Ensure parent folders of activeFile are always expanded
+  useEffect(() => {
+    if (activeFile) {
+      const parts = activeFile.replace(/\\/g, '/').split('/');
+      if (parts.length > 1) {
+        setExpandedFolders((prev) => {
+          const next = new Set(prev);
+          let acc = '';
+          for (let i = 0; i < parts.length - 1; i++) {
+            acc = acc ? `${acc}/${parts[i]}` : parts[i];
+            next.add(acc);
+          }
+          return next;
+        });
+      }
+    }
+  }, [activeFile]);
 
   const toggleFolder = (folderPath: string) => {
     setExpandedFolders((prev) => {
@@ -191,6 +227,14 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
       }
       return next;
     });
+  };
+
+  const toggleAllFolders = () => {
+    if (expandedFolders.size > 0) {
+      setExpandedFolders(new Set());
+    } else {
+      setExpandedFolders(new Set(allFolderPaths));
+    }
   };
 
   const filteredDiffs = useMemo(() => {
@@ -374,6 +418,42 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
         </div>
       </div>
 
+      {/* Quick File Selector Bar */}
+      {diffs.length > 0 && (
+        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-950/70 border-b border-slate-800/80 overflow-x-auto scrollbar-thin scrollbar-thumb-slate-800 shrink-0">
+          <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold shrink-0 mr-1 hidden sm:inline">
+            Files ({filteredDiffs.length}):
+          </span>
+          {filteredDiffs.map((d) => {
+            const isSelected = selectedDiff?.file === d.file;
+            const name = d.file.split('/').pop() || d.file;
+            const ext = getExtBadge(name);
+            return (
+              <button
+                key={d.file}
+                type="button"
+                onClick={() => onSelectFile(d.file)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono shrink-0 transition-all cursor-pointer border ${
+                  isSelected
+                    ? 'bg-indigo-600/30 border-indigo-500/80 text-white font-medium shadow-xs ring-1 ring-indigo-500/30'
+                    : 'bg-slate-900/90 hover:bg-slate-850 text-slate-300 hover:text-white border-slate-800'
+                }`}
+                title={d.file}
+              >
+                <span className={`px-1 py-0.2 rounded text-[9px] font-bold border uppercase ${ext.color}`}>
+                  {ext.label}
+                </span>
+                <span className="truncate max-w-[130px] sm:max-w-[200px]">{name}</span>
+                <span className="text-[10px] font-mono">
+                  {d.additions > 0 && <span className="text-emerald-400">+{d.additions}</span>}
+                  {d.deletions > 0 && <span className="text-rose-400 ml-0.5">-{d.deletions}</span>}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Main Area: Split Tree & Diff */}
       {diffs.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-500 space-y-3">
@@ -392,8 +472,66 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
           {/* Review Tree Sidebar (collapses when isExpanded is true) */}
           {!isExpanded && (
             <div className="w-full md:w-64 lg:w-72 border-b md:border-b-0 md:border-r border-slate-800 overflow-y-auto max-h-56 md:max-h-full shrink-0 bg-slate-950/40 p-2 space-y-0.5 scrollbar-thin scrollbar-thumb-slate-800">
-              {tree.children.length === 0 ? (
+              {/* Sidebar Header Toolbar */}
+              <div className="flex items-center justify-between pb-1.5 mb-1 px-1 border-b border-slate-800/60 text-[11px] text-slate-400">
+                <span className="font-semibold text-slate-300 text-xs">Files ({filteredDiffs.length})</span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setViewMode((m) => (m === 'tree' ? 'flat' : 'tree'))}
+                    title={viewMode === 'tree' ? 'Switch to Flat List' : 'Switch to Tree View'}
+                    className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                  >
+                    {viewMode === 'tree' ? <List className="w-3.5 h-3.5" /> : <ListTree className="w-3.5 h-3.5" />}
+                  </button>
+                  {viewMode === 'tree' && (
+                    <button
+                      type="button"
+                      onClick={toggleAllFolders}
+                      title={expandedFolders.size > 0 ? 'Collapse all folders' : 'Expand all folders'}
+                      className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                    >
+                      <ChevronsUpDown className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {filteredDiffs.length === 0 ? (
                 <div className="p-4 text-center text-slate-500 text-xs font-mono">No matching files</div>
+              ) : viewMode === 'flat' ? (
+                filteredDiffs.map((diff) => {
+                  const isSelected = selectedDiff?.file === diff.file;
+                  const ext = getExtBadge(diff.file);
+                  const status = getFileStatus(diff);
+                  return (
+                    <div
+                      key={diff.file}
+                      onClick={() => onSelectFile(diff.file)}
+                      className={`flex items-center justify-between py-1.5 px-2 rounded-lg cursor-pointer transition-all text-xs font-mono group my-0.5 ${
+                        isSelected
+                          ? 'bg-indigo-950/60 border-l-2 border-indigo-500 text-white font-medium shadow-xs'
+                          : 'text-slate-300 hover:bg-slate-900/60 hover:text-white'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0 pr-2">
+                        <span className={`px-1 py-0.2 rounded text-[9px] font-bold border uppercase shrink-0 ${ext.color}`}>
+                          {ext.label}
+                        </span>
+                        <span className="truncate text-slate-200 group-hover:text-white" title={diff.file}>
+                          {diff.file}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[10px] shrink-0">
+                        <span className={`px-1 rounded text-[9px] font-bold border ${status.bg} ${status.text}`}>
+                          {status.label}
+                        </span>
+                        {diff.additions > 0 && <span className="text-emerald-400">+{diff.additions}</span>}
+                        {diff.deletions > 0 && <span className="text-rose-400">-{diff.deletions}</span>}
+                      </div>
+                    </div>
+                  );
+                })
               ) : (
                 tree.children.map((child) => renderTreeNode(child))
               )}
