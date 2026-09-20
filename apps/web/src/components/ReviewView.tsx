@@ -1,7 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import {
-  Folder,
-  FolderOpen,
   ChevronRight,
   ChevronDown,
   Search,
@@ -9,10 +7,12 @@ import {
   FileCode,
   CheckCircle2,
   WrapText,
-  Maximize2,
-  Minimize2,
-  ListTree,
-  List,
+  GitBranch,
+  FileSliders,
+  Package,
+  FileJson,
+  FileText,
+  Code2,
   ChevronsUpDown,
 } from 'lucide-react';
 import type { SnapshotFileDiff } from '@opencode-remote/protocol';
@@ -24,123 +24,106 @@ interface ReviewViewProps {
   onRefresh: () => void;
 }
 
-interface FileNode {
-  type: 'file';
-  name: string;
-  path: string;
-  diff: SnapshotFileDiff;
+interface ParsedDiffLine {
+  type: 'hunk' | 'add' | 'del' | 'context';
+  oldNum: number | null;
+  newNum: number | null;
+  text: string;
 }
 
-interface FolderNode {
-  type: 'folder';
-  name: string;
-  path: string;
-  children: (FolderNode | FileNode)[];
-  additions: number;
-  deletions: number;
-  filesCount: number;
-}
+function parsePatch(patch?: string): ParsedDiffLine[] {
+  if (!patch) return [];
+  const lines = patch.split('\n');
+  let oldLineNum = 1;
+  let newLineNum = 1;
 
-function getExtBadge(filename: string) {
-  const ext = filename.split('.').pop()?.toLowerCase() || '';
-  switch (ext) {
-    case 'ts':
-    case 'tsx':
-      return { label: 'TS', color: 'bg-blue-500/15 text-blue-400 border-blue-500/30' };
-    case 'js':
-    case 'jsx':
-    case 'mjs':
-      return { label: 'JS', color: 'bg-amber-500/15 text-amber-400 border-amber-500/30' };
-    case 'json':
-      return { label: 'JSON', color: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' };
-    case 'css':
-    case 'scss':
-      return { label: 'CSS', color: 'bg-sky-500/15 text-sky-400 border-sky-500/30' };
-    case 'md':
-      return { label: 'MD', color: 'bg-purple-500/15 text-purple-400 border-purple-500/30' };
-    case 'py':
-      return { label: 'PY', color: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' };
-    default:
-      return { label: ext.slice(0, 3).toUpperCase() || 'FILE', color: 'bg-slate-800 text-slate-400 border-slate-700' };
-  }
-}
-
-function getFileStatus(diff: SnapshotFileDiff): { label: string; bg: string; text: string } {
-  const s = (diff.status || '').toLowerCase();
-  if (s === 'added' || (diff.deletions === 0 && diff.additions > 0)) {
-    return { label: 'A', bg: 'bg-emerald-950/70 border-emerald-700/60', text: 'text-emerald-400' };
-  }
-  if (s === 'deleted' || (diff.additions === 0 && diff.deletions > 0)) {
-    return { label: 'D', bg: 'bg-rose-950/70 border-rose-700/60', text: 'text-rose-400' };
-  }
-  if (s === 'renamed') {
-    return { label: 'R', bg: 'bg-purple-950/70 border-purple-700/60', text: 'text-purple-400' };
-  }
-  return { label: 'M', bg: 'bg-amber-950/70 border-amber-700/60', text: 'text-amber-400' };
-}
-
-function buildFileTree(diffs: SnapshotFileDiff[]): FolderNode {
-  const root: FolderNode = {
-    type: 'folder',
-    name: 'root',
-    path: '',
-    children: [],
-    additions: 0,
-    deletions: 0,
-    filesCount: 0,
-  };
-
-  for (const diff of diffs) {
-    const parts = diff.file.replace(/\\/g, '/').split('/');
-    let currentFolder = root;
-    currentFolder.additions += diff.additions;
-    currentFolder.deletions += diff.deletions;
-    currentFolder.filesCount += 1;
-
-    for (let i = 0; i < parts.length - 1; i++) {
-      const folderName = parts[i];
-      const folderPath = parts.slice(0, i + 1).join('/');
-      let childFolder = currentFolder.children.find(
-        (c): c is FolderNode => c.type === 'folder' && c.name === folderName
-      );
-      if (!childFolder) {
-        childFolder = {
-          type: 'folder',
-          name: folderName,
-          path: folderPath,
-          children: [],
-          additions: 0,
-          deletions: 0,
-          filesCount: 0,
-        };
-        currentFolder.children.push(childFolder);
+  return lines.map((line) => {
+    if (line.startsWith('@@')) {
+      const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (match) {
+        oldLineNum = parseInt(match[1], 10);
+        newLineNum = parseInt(match[2], 10);
       }
-      childFolder.additions += diff.additions;
-      childFolder.deletions += diff.deletions;
-      childFolder.filesCount += 1;
-      currentFolder = childFolder;
+      return {
+        type: 'hunk' as const,
+        oldNum: null,
+        newNum: null,
+        text: line,
+      };
     }
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      const cur = newLineNum++;
+      return {
+        type: 'add' as const,
+        oldNum: null,
+        newNum: cur,
+        text: line.slice(1),
+      };
+    }
+    if (line.startsWith('-') && !line.startsWith('---')) {
+      const cur = oldLineNum++;
+      return {
+        type: 'del' as const,
+        oldNum: cur,
+        newNum: null,
+        text: line.slice(1),
+      };
+    }
+    const curOld = oldLineNum++;
+    const curNew = newLineNum++;
+    return {
+      type: 'context' as const,
+      oldNum: curOld,
+      newNum: curNew,
+      text: line.startsWith(' ') ? line.slice(1) : line,
+    };
+  });
+}
 
-    const fileName = parts[parts.length - 1];
-    currentFolder.children.push({
-      type: 'file',
-      name: fileName,
-      path: diff.file,
-      diff,
-    });
+function getFileIcon(filename: string) {
+  const name = filename.toLowerCase();
+  if (name === '.gitignore' || name.endsWith('.gitmodules')) {
+    return <GitBranch className="w-3.5 h-3.5 text-rose-500 shrink-0" />;
   }
-
-  const sortTree = (folder: FolderNode) => {
-    folder.children.sort((a, b) => {
-      if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-    for (const child of folder.children) {
-      if (child.type === 'folder') sortTree(child);
-    }
-  };
-  sortTree(root);
-  return root;
+  if (name.endsWith('.yaml') || name.endsWith('.yml')) {
+    return <FileSliders className="w-3.5 h-3.5 text-amber-400 shrink-0" />;
+  }
+  if (name === 'package.json' || name.endsWith('.package.json')) {
+    return <Package className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
+  }
+  if (name.includes('tsconfig') || name.endsWith('.ts') || name.endsWith('.tsx')) {
+    return (
+      <span className="text-[10px] font-bold text-sky-400 font-mono tracking-tight shrink-0">
+        TS
+      </span>
+    );
+  }
+  if (name.endsWith('.js') || name.endsWith('.jsx') || name.endsWith('.mjs')) {
+    return (
+      <span className="text-[10px] font-bold text-amber-400 font-mono tracking-tight shrink-0">
+        JS
+      </span>
+    );
+  }
+  if (name.endsWith('.py')) {
+    return <Code2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
+  }
+  if (name.endsWith('.html')) {
+    return <Code2 className="w-3.5 h-3.5 text-orange-400 shrink-0" />;
+  }
+  if (name.endsWith('.css') || name.endsWith('.scss')) {
+    return <FileCode className="w-3.5 h-3.5 text-cyan-400 shrink-0" />;
+  }
+  if (name.endsWith('.json')) {
+    return <FileJson className="w-3.5 h-3.5 text-amber-300 shrink-0" />;
+  }
+  if (name.startsWith('.env')) {
+    return <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />;
+  }
+  if (name === '.npmrc') {
+    return <Package className="w-3.5 h-3.5 text-rose-400 shrink-0" />;
+  }
+  return <FileCode className="w-3.5 h-3.5 text-slate-400 shrink-0" />;
 }
 
 export const ReviewView: React.FC<ReviewViewProps> = ({
@@ -150,8 +133,6 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
   onRefresh,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [isDiffCollapsed, setIsDiffCollapsed] = useState(false);
   const [wrapText, setWrapText] = useState<boolean>(() => {
     try {
       return localStorage.getItem('opencode_diff_wrap') === 'true';
@@ -169,71 +150,58 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
       return next;
     });
   };
-  // Collect all folder paths across all diffs to expand by default
-  const allFolderPaths = useMemo(() => {
-    const set = new Set<string>();
-    for (const d of diffs) {
-      const parts = d.file.replace(/\\/g, '/').split('/');
-      let acc = '';
-      for (let i = 0; i < parts.length - 1; i++) {
-        acc = acc ? `${acc}/${parts[i]}` : parts[i];
-        set.add(acc);
-      }
+
+  const [expandedFiles, setExpandedFiles] = useState<Set<string>>(() => {
+    const initial = new Set<string>();
+    if (activeFile) {
+      initial.add(activeFile);
+    } else if (diffs.length > 0) {
+      initial.add(diffs[0].file);
     }
-    return set;
-  }, [diffs]);
+    return initial;
+  });
 
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => allFolderPaths);
-  const [viewMode, setViewMode] = useState<'tree' | 'flat'>('tree');
-
-  // Auto-expand all folders whenever diffs arrive or update
   useEffect(() => {
-    if (diffs.length > 0) {
-      setExpandedFolders((prev) => {
+    if (activeFile) {
+      setExpandedFiles((prev) => {
         const next = new Set(prev);
-        for (const p of allFolderPaths) {
-          next.add(p);
-        }
+        next.add(activeFile);
         return next;
       });
     }
-  }, [allFolderPaths, diffs.length]);
-
-  // Ensure parent folders of activeFile are always expanded
-  useEffect(() => {
-    if (activeFile) {
-      const parts = activeFile.replace(/\\/g, '/').split('/');
-      if (parts.length > 1) {
-        setExpandedFolders((prev) => {
-          const next = new Set(prev);
-          let acc = '';
-          for (let i = 0; i < parts.length - 1; i++) {
-            acc = acc ? `${acc}/${parts[i]}` : parts[i];
-            next.add(acc);
-          }
-          return next;
-        });
-      }
-    }
   }, [activeFile]);
 
-  const toggleFolder = (folderPath: string) => {
-    setExpandedFolders((prev) => {
+  useEffect(() => {
+    if (diffs.length > 0) {
+      setExpandedFiles((prev) => {
+        if (prev.size === 0) {
+          const next = new Set<string>();
+          next.add(diffs[0].file);
+          return next;
+        }
+        return prev;
+      });
+    }
+  }, [diffs]);
+
+  const toggleFileExpanded = (file: string) => {
+    setExpandedFiles((prev) => {
       const next = new Set(prev);
-      if (next.has(folderPath)) {
-        next.delete(folderPath);
+      if (next.has(file)) {
+        next.delete(file);
       } else {
-        next.add(folderPath);
+        next.add(file);
       }
       return next;
     });
+    onSelectFile(file);
   };
 
-  const toggleAllFolders = () => {
-    if (expandedFolders.size > 0) {
-      setExpandedFolders(new Set());
+  const toggleAll = () => {
+    if (expandedFiles.size > 0) {
+      setExpandedFiles(new Set());
     } else {
-      setExpandedFolders(new Set(allFolderPaths));
+      setExpandedFiles(new Set(diffs.map((d) => d.file)));
     }
   };
 
@@ -243,142 +211,8 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
     return diffs.filter((d) => d.file.toLowerCase().includes(q));
   }, [diffs, searchQuery]);
 
-  const tree = useMemo(() => buildFileTree(filteredDiffs), [filteredDiffs]);
-
-  const selectedDiff = useMemo(() => {
-    if (activeFile) {
-      const found = diffs.find((d) => d.file === activeFile);
-      if (found) return found;
-    }
-    return filteredDiffs[0] || null;
-  }, [diffs, activeFile, filteredDiffs]);
-
   const totalAdditions = useMemo(() => diffs.reduce((acc, d) => acc + d.additions, 0), [diffs]);
   const totalDeletions = useMemo(() => diffs.reduce((acc, d) => acc + d.deletions, 0), [diffs]);
-
-  // Parse patch with line numbers
-  const parsedDiffLines = useMemo(() => {
-    if (!selectedDiff?.patch) return [];
-    const lines = selectedDiff.patch.split('\n');
-    let oldLineNum = 1;
-    let newLineNum = 1;
-
-    return lines.map((line) => {
-      if (line.startsWith('@@')) {
-        const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-        if (match) {
-          oldLineNum = parseInt(match[1], 10);
-          newLineNum = parseInt(match[2], 10);
-        }
-        return {
-          type: 'hunk' as const,
-          oldNum: null,
-          newNum: null,
-          text: line,
-        };
-      }
-      if (line.startsWith('+') && !line.startsWith('+++')) {
-        const cur = newLineNum++;
-        return {
-          type: 'add' as const,
-          oldNum: null,
-          newNum: cur,
-          text: line.slice(1),
-        };
-      }
-      if (line.startsWith('-') && !line.startsWith('---')) {
-        const cur = oldLineNum++;
-        return {
-          type: 'del' as const,
-          oldNum: cur,
-          newNum: null,
-          text: line.slice(1),
-        };
-      }
-      const curOld = oldLineNum++;
-      const curNew = newLineNum++;
-      return {
-        type: 'context' as const,
-        oldNum: curOld,
-        newNum: curNew,
-        text: line.startsWith(' ') ? line.slice(1) : line,
-      };
-    });
-  }, [selectedDiff]);
-
-  // Recursive Tree Node Renderer
-  const renderTreeNode = (node: FolderNode | FileNode, depth = 0) => {
-    if (node.type === 'folder') {
-      const isExpanded = expandedFolders.has(node.path);
-      return (
-        <div key={node.path || node.name} className="select-none">
-          <div
-            onClick={() => toggleFolder(node.path)}
-            style={{ paddingLeft: `${depth * 12 + 10}px` }}
-            className="flex items-center justify-between py-1.5 pr-2.5 rounded-lg hover:bg-slate-900/70 text-slate-300 hover:text-white cursor-pointer transition-colors text-xs font-mono group"
-          >
-            <div className="flex items-center gap-1.5 min-w-0 pr-1">
-              {isExpanded ? (
-                <ChevronDown className="w-3.5 h-3.5 text-slate-500 group-hover:text-slate-300 shrink-0" />
-              ) : (
-                <ChevronRight className="w-3.5 h-3.5 text-slate-500 group-hover:text-slate-300 shrink-0" />
-              )}
-              {isExpanded ? (
-                <FolderOpen className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-              ) : (
-                <Folder className="w-3.5 h-3.5 text-indigo-400/80 shrink-0" />
-              )}
-              <span className="truncate font-semibold text-slate-200">{node.name}/</span>
-            </div>
-
-            <div className="flex items-center gap-1 text-[10px] text-slate-500 shrink-0">
-              {node.additions > 0 && <span className="text-emerald-400 font-mono">+{node.additions}</span>}
-              {node.deletions > 0 && <span className="text-rose-400 font-mono">-{node.deletions}</span>}
-            </div>
-          </div>
-
-          {isExpanded && (
-            <div>
-              {node.children.map((child) => renderTreeNode(child, depth + 1))}
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // File Node
-    const isSelected = selectedDiff?.file === node.path;
-    const ext = getExtBadge(node.name);
-    const status = getFileStatus(node.diff);
-
-    return (
-      <div
-        key={node.path}
-        onClick={() => onSelectFile(node.path)}
-        style={{ paddingLeft: `${depth * 12 + 18}px` }}
-        className={`flex items-center justify-between py-1.5 pr-2.5 rounded-lg cursor-pointer transition-all text-xs font-mono group my-0.5 ${
-          isSelected
-            ? 'bg-indigo-950/60 border-l-2 border-indigo-500 text-white font-medium shadow-xs'
-            : 'text-slate-300 hover:bg-slate-900/60 hover:text-white'
-        }`}
-      >
-        <div className="flex items-center gap-2 min-w-0 pr-2">
-          <span className={`px-1 py-0.2 rounded text-[9px] font-bold border uppercase shrink-0 ${ext.color}`}>
-            {ext.label}
-          </span>
-          <span className="truncate text-slate-200 group-hover:text-white">{node.name}</span>
-        </div>
-
-        <div className="flex items-center gap-1.5 text-[10px] shrink-0">
-          <span className={`px-1 rounded text-[9px] font-bold border ${status.bg} ${status.text}`}>
-            {status.label}
-          </span>
-          {node.diff.additions > 0 && <span className="text-emerald-400">+{node.diff.additions}</span>}
-          {node.diff.deletions > 0 && <span className="text-rose-400">-{node.diff.deletions}</span>}
-        </div>
-      </div>
-    );
-  };
 
   return (
     <div className="flex flex-col h-full bg-[#0b0f19] text-slate-200 overflow-hidden font-sans">
@@ -395,14 +229,24 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onRefresh}
-            title="Refresh changes"
-            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={toggleAll}
+              title={expandedFiles.size > 0 ? 'Collapse all diffs' : 'Expand all diffs'}
+              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
+            >
+              <ChevronsUpDown className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={onRefresh}
+              title="Refresh changes"
+              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
         {/* Filter Input */}
@@ -418,43 +262,7 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
         </div>
       </div>
 
-      {/* Quick File Selector Bar */}
-      {diffs.length > 0 && (
-        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-950/70 border-b border-slate-800/80 overflow-x-auto scrollbar-thin scrollbar-thumb-slate-800 shrink-0">
-          <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold shrink-0 mr-1 hidden sm:inline">
-            Files ({filteredDiffs.length}):
-          </span>
-          {filteredDiffs.map((d) => {
-            const isSelected = selectedDiff?.file === d.file;
-            const name = d.file.split('/').pop() || d.file;
-            const ext = getExtBadge(name);
-            return (
-              <button
-                key={d.file}
-                type="button"
-                onClick={() => onSelectFile(d.file)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono shrink-0 transition-all cursor-pointer border ${
-                  isSelected
-                    ? 'bg-indigo-600/30 border-indigo-500/80 text-white font-medium shadow-xs ring-1 ring-indigo-500/30'
-                    : 'bg-slate-900/90 hover:bg-slate-850 text-slate-300 hover:text-white border-slate-800'
-                }`}
-                title={d.file}
-              >
-                <span className={`px-1 py-0.2 rounded text-[9px] font-bold border uppercase ${ext.color}`}>
-                  {ext.label}
-                </span>
-                <span className="truncate max-w-[130px] sm:max-w-[200px]">{name}</span>
-                <span className="text-[10px] font-mono">
-                  {d.additions > 0 && <span className="text-emerald-400">+{d.additions}</span>}
-                  {d.deletions > 0 && <span className="text-rose-400 ml-0.5">-{d.deletions}</span>}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Main Area: Split Tree & Diff */}
+      {/* Main Area: Antigravity-style Accordion File List with Inline Diff */}
       {diffs.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-500 space-y-3">
           <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-emerald-400 shadow-inner">
@@ -468,198 +276,155 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
           </div>
         </div>
       ) : (
-        <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-          {/* Review Tree Sidebar (collapses when isExpanded is true) */}
-          {!isExpanded && (
-            <div className="w-full md:w-64 lg:w-72 border-b md:border-b-0 md:border-r border-slate-800 overflow-y-auto max-h-56 md:max-h-full shrink-0 bg-slate-950/40 p-2 space-y-0.5 scrollbar-thin scrollbar-thumb-slate-800">
-              {/* Sidebar Header Toolbar */}
-              <div className="flex items-center justify-between pb-1.5 mb-1 px-1 border-b border-slate-800/60 text-[11px] text-slate-400">
-                <span className="font-semibold text-slate-300 text-xs">Files ({filteredDiffs.length})</span>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setViewMode((m) => (m === 'tree' ? 'flat' : 'tree'))}
-                    title={viewMode === 'tree' ? 'Switch to Flat List' : 'Switch to Tree View'}
-                    className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
-                  >
-                    {viewMode === 'tree' ? <List className="w-3.5 h-3.5" /> : <ListTree className="w-3.5 h-3.5" />}
-                  </button>
-                  {viewMode === 'tree' && (
-                    <button
-                      type="button"
-                      onClick={toggleAllFolders}
-                      title={expandedFolders.size > 0 ? 'Collapse all folders' : 'Expand all folders'}
-                      className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
-                    >
-                      <ChevronsUpDown className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {filteredDiffs.length === 0 ? (
-                <div className="p-4 text-center text-slate-500 text-xs font-mono">No matching files</div>
-              ) : viewMode === 'flat' ? (
-                filteredDiffs.map((diff) => {
-                  const isSelected = selectedDiff?.file === diff.file;
-                  const ext = getExtBadge(diff.file);
-                  const status = getFileStatus(diff);
-                  return (
-                    <div
-                      key={diff.file}
-                      onClick={() => onSelectFile(diff.file)}
-                      className={`flex items-center justify-between py-1.5 px-2 rounded-lg cursor-pointer transition-all text-xs font-mono group my-0.5 ${
-                        isSelected
-                          ? 'bg-indigo-950/60 border-l-2 border-indigo-500 text-white font-medium shadow-xs'
-                          : 'text-slate-300 hover:bg-slate-900/60 hover:text-white'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0 pr-2">
-                        <span className={`px-1 py-0.2 rounded text-[9px] font-bold border uppercase shrink-0 ${ext.color}`}>
-                          {ext.label}
-                        </span>
-                        <span className="truncate text-slate-200 group-hover:text-white" title={diff.file}>
-                          {diff.file}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-[10px] shrink-0">
-                        <span className={`px-1 rounded text-[9px] font-bold border ${status.bg} ${status.text}`}>
-                          {status.label}
-                        </span>
-                        {diff.additions > 0 && <span className="text-emerald-400">+{diff.additions}</span>}
-                        {diff.deletions > 0 && <span className="text-rose-400">-{diff.deletions}</span>}
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                tree.children.map((child) => renderTreeNode(child))
-              )}
+        <div className="flex-1 overflow-y-auto divide-y divide-slate-800/40 scrollbar-thin scrollbar-thumb-slate-800">
+          {filteredDiffs.length === 0 ? (
+            <div className="p-8 text-center text-slate-500 text-xs font-mono">
+              No matching files found
             </div>
-          )}
+          ) : (
+            filteredDiffs.map((diff) => {
+              const parts = diff.file.replace(/\\/g, '/').split('/');
+              const fileName = parts.pop() || diff.file;
+              const dirPath = parts.join('/');
+              const isExpanded = expandedFiles.has(diff.file);
+              const parsedLines = parsePatch(diff.patch);
 
-          {/* Diff Viewer Area */}
-          <div className="flex-1 flex flex-col overflow-hidden bg-[#090d16]">
-            {selectedDiff ? (
-              <>
-                {/* Diff Header */}
-                <div className="flex items-center justify-between px-3.5 py-2 bg-slate-900/80 border-b border-slate-800 text-xs shrink-0 select-none">
+              return (
+                <div key={diff.file} className="transition-colors">
+                  {/* Accordion File Row */}
                   <div
-                    onClick={() => setIsDiffCollapsed((prev) => !prev)}
-                    className="flex items-center gap-2 min-w-0 pr-2 cursor-pointer group flex-1"
-                    title={isDiffCollapsed ? 'Expand diff body' : 'Collapse diff body'}
+                    onClick={() => toggleFileExpanded(diff.file)}
+                    className={`flex items-center justify-between py-2 px-3 hover:bg-slate-900/60 cursor-pointer transition-colors select-none group ${
+                      isExpanded ? 'bg-slate-900/40' : ''
+                    }`}
                   >
-                    {isDiffCollapsed ? (
-                      <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-white transition-transform shrink-0" />
-                    ) : (
-                      <ChevronDown className="w-3.5 h-3.5 text-slate-400 group-hover:text-white transition-transform shrink-0" />
-                    )}
-                    <FileCode className="w-4 h-4 text-indigo-400 shrink-0" />
-                    <span className="font-mono text-slate-200 font-medium truncate text-xs group-hover:text-white">
-                      {selectedDiff.file}
-                    </span>
-                    <div className="flex items-center gap-1 font-mono text-[11px] shrink-0 ml-1">
-                      {selectedDiff.additions > 0 && (
-                        <span className="text-emerald-400 font-bold">+{selectedDiff.additions}</span>
+                    {/* Left: Icon, Filename, Path */}
+                    <div className="flex items-center gap-2 min-w-0 pr-2">
+                      <div className="w-4 h-4 flex items-center justify-center shrink-0">
+                        {getFileIcon(fileName)}
+                      </div>
+                      <span className="font-mono text-xs font-semibold text-slate-200 group-hover:text-white truncate">
+                        {fileName}
+                      </span>
+                      {dirPath && (
+                        <span className="font-mono text-[11px] text-slate-500 truncate group-hover:text-slate-400">
+                          {dirPath}
+                        </span>
                       )}
-                      {selectedDiff.deletions > 0 && (
-                        <span className="text-rose-400 font-bold">-{selectedDiff.deletions}</span>
+                    </div>
+
+                    {/* Right: +X -Y > */}
+                    <div className="flex items-center gap-2 text-xs font-mono shrink-0 ml-2">
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        {diff.additions > 0 && (
+                          <span className="text-emerald-400 font-semibold font-mono">
+                            +{diff.additions}
+                          </span>
+                        )}
+                        {diff.deletions > 0 && (
+                          <span className="text-rose-400 font-semibold font-mono">
+                            -{diff.deletions}
+                          </span>
+                        )}
+                        {diff.additions === 0 && diff.deletions === 0 && (
+                          <span className="text-slate-500 font-mono">+0 -0</span>
+                        )}
+                      </div>
+
+                      {isExpanded ? (
+                        <ChevronDown className="w-3.5 h-3.5 text-slate-500 group-hover:text-slate-300 transition-transform shrink-0" />
+                      ) : (
+                        <ChevronRight className="w-3.5 h-3.5 text-slate-500 group-hover:text-slate-300 transition-transform shrink-0" />
                       )}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      type="button"
-                      onClick={toggleWrapText}
-                      className={`px-2 py-1 rounded transition-colors flex items-center gap-1 text-[10px] font-mono cursor-pointer border ${
-                        wrapText
-                          ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50 font-semibold'
-                          : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border-transparent'
-                      }`}
-                      title={wrapText ? 'Line wrapping enabled (tap to disable)' : 'Line wrapping disabled (tap to enable)'}
-                    >
-                      <WrapText className="w-3 h-3" />
-                      <span>{wrapText ? 'Wrap: On' : 'Wrap'}</span>
-                    </button>
-
-                    {/* Expand/Collapse Fullscreen Toggle Icon Button */}
-                    <button
-                      type="button"
-                      onClick={() => setIsExpanded((prev) => !prev)}
-                      className="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer border border-slate-700/50"
-                      title={isExpanded ? 'Collapse view (show file tree)' : 'Expand view (full screen)'}
-                      aria-label={isExpanded ? 'Collapse view' : 'Expand view'}
-                    >
-                      {isExpanded ? (
-                        <Minimize2 className="w-3.5 h-3.5 text-indigo-400" />
-                      ) : (
-                        <Maximize2 className="w-3.5 h-3.5" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Diff Body Lines with Gutter Line Numbers (collapsible) */}
-                {!isDiffCollapsed && (
-                  <div className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-5 select-text scrollbar-thin scrollbar-thumb-slate-800">
-                    {parsedDiffLines.length === 0 ? (
-                      <div className="p-8 text-center text-slate-500 text-xs">
-                        Binary file or empty patch payload
+                  {/* Inline Diff Body (unfolds directly below the row) */}
+                  {isExpanded && (
+                    <div className="border-t border-slate-800/80 bg-[#080b12] overflow-hidden">
+                      {/* Diff Line Wrap Control Bar */}
+                      <div className="flex items-center justify-between px-3 py-1 bg-slate-900/70 border-b border-slate-800/60 text-[10px] text-slate-400 font-mono">
+                        <span className="truncate text-slate-500">{diff.file}</span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleWrapText();
+                          }}
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-mono border transition-colors cursor-pointer flex items-center gap-1 ${
+                            wrapText
+                              ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50 font-semibold'
+                              : 'bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border-transparent'
+                          }`}
+                          title="Toggle line wrap"
+                        >
+                          <WrapText className="w-2.5 h-2.5" />
+                          <span>Wrap: {wrapText ? 'On' : 'Off'}</span>
+                        </button>
                       </div>
-                    ) : (
-                      <div className={wrapText ? 'w-full' : 'min-w-fit'}>
-                      {parsedDiffLines.map((line, idx) => {
-                        if (line.type === 'hunk') {
-                          return (
-                            <div
-                              key={idx}
-                              className="py-1 px-3 my-1 rounded bg-indigo-950/30 text-indigo-400 border border-indigo-900/50 text-[10px] font-bold"
-                            >
-                              {line.text}
-                            </div>
-                          );
-                        }
 
-                        const isAdd = line.type === 'add';
-                        const isDel = line.type === 'del';
+                      {/* Diff Lines Content */}
+                      {parsedLines.length === 0 ? (
+                        <div className="p-4 text-center text-slate-500 text-xs font-mono">
+                          No line diff available for this file
+                        </div>
+                      ) : (
+                        <div className="p-2 font-mono text-[11px] leading-5 select-text overflow-x-auto scrollbar-thin scrollbar-thumb-slate-800">
+                          <div className="min-w-fit">
+                            {parsedLines.map((line, idx) => {
+                              if (line.type === 'hunk') {
+                                return (
+                                  <div
+                                    key={idx}
+                                    className="py-1 px-3 my-1 rounded bg-indigo-950/30 text-indigo-400 border border-indigo-900/50 text-[10px] font-bold"
+                                  >
+                                    {line.text}
+                                  </div>
+                                );
+                              }
 
-                        let rowBg = 'hover:bg-slate-900/30 text-slate-300';
-                        if (isAdd) rowBg = 'bg-emerald-950/35 text-emerald-200 border-l-2 border-emerald-500';
-                        if (isDel) rowBg = 'bg-rose-950/35 text-rose-200 border-l-2 border-rose-500';
+                              const isAdd = line.type === 'add';
+                              const isDel = line.type === 'del';
 
-                        return (
-                          <div key={idx} className={`flex items-start ${rowBg}`}>
-                            {/* Gutter: Old Line */}
-                            <span className="w-10 shrink-0 select-none text-right pr-2 text-slate-600 text-[10px] font-mono">
-                              {line.oldNum ?? ''}
-                            </span>
-                            {/* Gutter: New Line */}
-                            <span className="w-10 shrink-0 select-none text-right pr-2 text-slate-600 text-[10px] font-mono">
-                              {line.newNum ?? ''}
-                            </span>
-                            {/* Marker */}
-                            <span className="w-4 shrink-0 select-none text-center font-bold text-[10px]">
-                              {isAdd ? '+' : isDel ? '-' : ' '}
-                            </span>
-                            {/* Content */}
-                            <span className={`flex-1 font-mono pr-4 ${wrapText ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}`}>
-                              {line.text}
-                            </span>
+                              return (
+                                <div
+                                  key={idx}
+                                  className={`flex items-start ${
+                                    isAdd
+                                      ? 'bg-emerald-950/35 text-emerald-200 border-l-2 border-emerald-500'
+                                      : isDel
+                                      ? 'bg-rose-950/35 text-rose-200 border-l-2 border-rose-500'
+                                      : 'hover:bg-slate-900/30 text-slate-300'
+                                  }`}
+                                >
+                                  <span className="w-10 shrink-0 select-none text-right pr-2 text-slate-600 text-[10px] font-mono">
+                                    {line.oldNum ?? ''}
+                                  </span>
+                                  <span className="w-10 shrink-0 select-none text-right pr-2 text-slate-600 text-[10px] font-mono">
+                                    {line.newNum ?? ''}
+                                  </span>
+                                  <span className="w-4 shrink-0 select-none text-center font-bold text-[10px]">
+                                    {isAdd ? '+' : isDel ? '-' : ' '}
+                                  </span>
+                                  <span
+                                    className={`flex-1 font-mono pr-4 ${
+                                      wrapText ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'
+                                    }`}
+                                  >
+                                    {line.text}
+                                  </span>
+                                </div>
+                              );
+                            })}
                           </div>
-                        );
-                      })}
+                        </div>
+                      )}
                     </div>
                   )}
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-slate-500 text-xs font-mono">
-                Select a file from the review tree to view changes
-              </div>
-            )}
-          </div>
+                </div>
+              );
+            })
+          )}
         </div>
       )}
     </div>
