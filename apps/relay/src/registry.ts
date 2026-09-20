@@ -5,6 +5,7 @@ import type {
   DeviceCapabilities,
   ProtocolMessage,
 } from '@opencode-remote/protocol';
+import type { PersistedDeviceRecord } from './store.js';
 
 export interface RegisteredDevice {
   deviceId: string;
@@ -125,6 +126,45 @@ export class DeviceRegistry {
     }));
   }
 
+  getAllMergedDevices(persistedRecords: PersistedDeviceRecord[]): DeviceInfo[] {
+    const merged = new Map<string, DeviceInfo>();
+
+    // Baseline: include all persisted devices as offline entries
+    for (const p of persistedRecords) {
+      merged.set(p.deviceId, {
+        deviceId: p.deviceId,
+        deviceName: p.deviceName,
+        online: false,
+        paired: Boolean(p.paired && p.phoneTokenHash),
+        agentVersion: p.agentVersion || '0.1.0',
+        os: p.os || 'unknown',
+        opencodeStatus: 'unavailable',
+        opencodeVersion: undefined,
+        lastSeen: p.lastSeen || p.createdAt,
+        capabilities: p.capabilities,
+      });
+    }
+
+    // Overlay live registered devices
+    for (const d of this.devices.values()) {
+      const persisted = persistedRecords.find((p) => p.deviceId === d.deviceId);
+      merged.set(d.deviceId, {
+        deviceId: d.deviceId,
+        deviceName: d.deviceName,
+        online: d.online,
+        paired: d.paired || Boolean(persisted?.paired && persisted?.phoneTokenHash),
+        agentVersion: d.agentVersion,
+        os: d.os,
+        opencodeStatus: d.online ? d.opencodeStatus : 'unavailable',
+        opencodeVersion: d.opencodeVersion,
+        lastSeen: d.lastSeen,
+        capabilities: d.capabilities,
+      });
+    }
+
+    return Array.from(merged.values());
+  }
+
   getDevice(deviceId: string): DeviceInfo | undefined {
     const d = this.devices.get(deviceId);
     if (!d) return undefined;
@@ -140,6 +180,39 @@ export class DeviceRegistry {
       lastSeen: d.lastSeen,
       capabilities: d.capabilities,
     };
+  }
+
+  getMergedDevice(deviceId: string, persistedRecord?: PersistedDeviceRecord): DeviceInfo | undefined {
+    const d = this.devices.get(deviceId);
+    if (d) {
+      return {
+        deviceId: d.deviceId,
+        deviceName: d.deviceName,
+        online: d.online,
+        paired: d.paired || Boolean(persistedRecord?.paired && persistedRecord?.phoneTokenHash),
+        agentVersion: d.agentVersion,
+        os: d.os,
+        opencodeStatus: d.online ? d.opencodeStatus : 'unavailable',
+        opencodeVersion: d.opencodeVersion,
+        lastSeen: d.lastSeen,
+        capabilities: d.capabilities,
+      };
+    }
+    if (persistedRecord) {
+      return {
+        deviceId: persistedRecord.deviceId,
+        deviceName: persistedRecord.deviceName,
+        online: false,
+        paired: Boolean(persistedRecord.paired && persistedRecord.phoneTokenHash),
+        agentVersion: persistedRecord.agentVersion || '0.1.0',
+        os: persistedRecord.os || 'unknown',
+        opencodeStatus: 'unavailable',
+        opencodeVersion: undefined,
+        lastSeen: persistedRecord.lastSeen || persistedRecord.createdAt,
+        capabilities: persistedRecord.capabilities,
+      };
+    }
+    return undefined;
   }
 
   getAgentSocket(deviceId: string): WebSocket | undefined {

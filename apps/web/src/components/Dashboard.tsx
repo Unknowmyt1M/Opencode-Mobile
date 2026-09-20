@@ -228,20 +228,26 @@ export function Dashboard({
           <div className="text-right">
             <span
               className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border ${
-                device.opencodeStatus === 'connected'
+                !device.online
+                  ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50'
+                  : device.opencodeStatus === 'connected'
                   ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
                   : 'bg-rose-500/10 text-rose-300 border-rose-500/20'
               }`}
             >
               <span
                 className={`w-1.5 h-1.5 rounded-full ${
-                  device.opencodeStatus === 'connected'
+                  !device.online
+                    ? 'bg-zinc-500'
+                    : device.opencodeStatus === 'connected'
                     ? 'bg-emerald-400 animate-pulse'
                     : 'bg-rose-400'
                 }`}
               />
               <span>
-                {device.opencodeStatus === 'connected'
+                {!device.online
+                  ? 'Authorized • Offline'
+                  : device.opencodeStatus === 'connected'
                   ? `OpenCode v${device.opencodeVersion || '1.18'}`
                   : 'OpenCode Off'}
               </span>

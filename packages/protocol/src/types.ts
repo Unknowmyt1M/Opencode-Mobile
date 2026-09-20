@@ -102,6 +102,7 @@ export interface AgentHelloPayload {
   os: string;
   protocolVersion: number;
   capabilities?: DeviceCapabilities;
+  agentCredential?: string;
   deviceToken?: string;
 }
 

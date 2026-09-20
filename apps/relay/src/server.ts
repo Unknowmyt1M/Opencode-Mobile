@@ -41,11 +41,17 @@ export function buildRelayServer(options: RelayOptions = {}): {
 
   app.register(websocket);
 
-  app.get('/health', async () => ({ status: 'ok' }));
-  app.get('/ready', async () => ({ status: 'ready' }));
+  app.get('/health', async () => ({
+    status: store.isPersistenceHealthy() ? 'ok' : 'degraded',
+    persistence: store.isPersistenceHealthy(),
+  }));
+  app.get('/ready', async () => ({
+    status: store.isPersistenceHealthy() ? 'ready' : 'not_ready',
+    persistence: store.isPersistenceHealthy(),
+  }));
 
   app.get('/api/devices', async () => ({
-    devices: registry.getAllDevices(),
+    devices: registry.getAllMergedDevices(store.getAllPersistedDevices()),
   }));
 
   app.register(async function (fastify) {
@@ -59,7 +65,7 @@ export function buildRelayServer(options: RelayOptions = {}): {
         const c = registeredClientId
           ? { clientId: registeredClientId }
           : registry.findClientBySocket(socket);
-        if (c) {
+        if (c && store.verifyDeviceToken(devId, tok)) {
           registry.addClientDeviceToken(c.clientId, devId, tok);
         }
       };
@@ -76,9 +82,31 @@ export function buildRelayServer(options: RelayOptions = {}): {
             // ==========================================
             case 'AGENT_HELLO': {
               const { deviceId, deviceName, agentVersion, os, capabilities } = message.payload;
-              registeredDeviceId = deviceId;
+              const agentCredential = message.payload.agentCredential || message.payload.deviceToken;
 
+              // Authenticate agent credential
+              const agentAuthenticated = store.verifyAgentCredential(deviceId, agentCredential, {
+                deviceName,
+                agentVersion,
+                os,
+                capabilities,
+              });
+
+              if (!agentAuthenticated) {
+                app.log.warn({ deviceId, connectionId }, '[relay] Agent authentication failed: credential mismatch');
+                const err = createMessage('ERROR', {
+                  code: 'AGENT_NOT_AUTHORIZED',
+                  message: 'Agent authentication failed: credential mismatch for this device',
+                  requestId: message.id,
+                });
+                socket.send(JSON.stringify(err));
+                socket.close(4001, 'Agent credential mismatch');
+                return;
+              }
+
+              registeredDeviceId = deviceId;
               const isPaired = store.isDevicePaired(deviceId);
+
               registry.registerAgent(
                 deviceId,
                 {
@@ -91,10 +119,15 @@ export function buildRelayServer(options: RelayOptions = {}): {
                 socket
               );
 
-              // Generate short-lived pairing code so phone can pair
-              const session = store.createPairingCode(deviceId, deviceName);
-              const pairingCode = session.code;
-              const pairingExpiresAt = session.expiresAt;
+              // Only generate pairing code if device is NOT already paired!
+              let pairingCode: string | undefined;
+              let pairingExpiresAt: number | undefined;
+
+              if (!isPaired) {
+                const session = store.createPairingCode(deviceId, deviceName);
+                pairingCode = session.code;
+                pairingExpiresAt = session.expiresAt;
+              }
 
               const ack = createMessage('AGENT_HELLO_ACK', {
                 success: true,
@@ -107,7 +140,7 @@ export function buildRelayServer(options: RelayOptions = {}): {
               socket.send(JSON.stringify(ack));
 
               // Broadcast updated DeviceStatus to clients
-              const currentDevice = registry.getDevice(deviceId);
+              const currentDevice = registry.getMergedDevice(deviceId, store.getDeviceRecord(deviceId));
               if (currentDevice) {
                 const statusMsg = createMessage('DEVICE_STATUS', {
                   deviceId: currentDevice.deviceId,
@@ -127,11 +160,21 @@ export function buildRelayServer(options: RelayOptions = {}): {
 
             case 'CLIENT_HELLO': {
               const { clientId, clientVersion } = message.payload;
-              const pairedTokens =
+              const rawTokens =
                 message.payload.pairedDeviceTokens || (message.payload as any).tokens;
               registeredClientId = clientId;
 
-              registry.registerClient(clientId, clientVersion, socket, pairedTokens);
+              // Validate supplied device tokens against store
+              const validatedTokens: Record<string, string> = {};
+              if (rawTokens && typeof rawTokens === 'object') {
+                for (const [devId, tok] of Object.entries(rawTokens)) {
+                  if (typeof tok === 'string' && store.verifyDeviceToken(devId, tok)) {
+                    validatedTokens[devId] = tok;
+                  }
+                }
+              }
+
+              registry.registerClient(clientId, clientVersion, socket, validatedTokens);
 
               const ack = createMessage('CLIENT_HELLO_ACK', {
                 success: true,
@@ -140,9 +183,9 @@ export function buildRelayServer(options: RelayOptions = {}): {
               });
               socket.send(JSON.stringify(ack));
 
-              // Send device list
+              // Send merged device list (live + persisted offline)
               const resultMsg = createMessage('DEVICE_STATUS_RESULT', {
-                devices: registry.getAllDevices(),
+                devices: registry.getAllMergedDevices(store.getAllPersistedDevices()),
               });
               socket.send(JSON.stringify(resultMsg));
               break;
@@ -152,7 +195,7 @@ export function buildRelayServer(options: RelayOptions = {}): {
               socket.send(
                 JSON.stringify(
                   createMessage('DEVICE_STATUS_RESULT', {
-                    devices: registry.getAllDevices(),
+                    devices: registry.getAllMergedDevices(store.getAllPersistedDevices()),
                   })
                 )
               );
@@ -281,7 +324,7 @@ export function buildRelayServer(options: RelayOptions = {}): {
                 pairingToClient.delete(pairingId);
 
                 // Broadcast updated device status (public status only, no token)
-                const dev = registry.getDevice(record.deviceId);
+                const dev = registry.getMergedDevice(record.deviceId, record);
                 if (dev) {
                   registry.broadcastToClients(createMessage('DEVICE_STATUS', dev));
                 }
@@ -330,7 +373,7 @@ export function buildRelayServer(options: RelayOptions = {}): {
                 );
 
                 // Broadcast updated status
-                const dev = registry.getDevice(deviceId);
+                const dev = registry.getMergedDevice(deviceId, store.getDeviceRecord(deviceId));
                 if (dev) {
                   registry.broadcastToClients(createMessage('DEVICE_STATUS', dev));
                 }
@@ -888,9 +931,13 @@ export function buildRelayServer(options: RelayOptions = {}): {
       socket.on('close', () => {
         if (registeredDeviceId) {
           registry.clearPtysForDevice(registeredDeviceId);
-          const device = registry.unregisterAgent(registeredDeviceId, socket);
-          if (device) {
-            registry.broadcastToClients(createMessage('DEVICE_STATUS', device));
+          registry.unregisterAgent(registeredDeviceId, socket);
+          const dev = registry.getMergedDevice(
+            registeredDeviceId,
+            store.getDeviceRecord(registeredDeviceId)
+          );
+          if (dev) {
+            registry.broadcastToClients(createMessage('DEVICE_STATUS', dev));
           }
         }
         if (registeredClientId) {

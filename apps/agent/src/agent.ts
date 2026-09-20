@@ -327,6 +327,7 @@ export class RemoteAgent {
         streaming: true,
         permissions: true,
       },
+      agentCredential: this.config.deviceCredential,
       deviceToken: this.config.deviceCredential,
     });
 
@@ -345,7 +346,7 @@ export class RemoteAgent {
           this.paired = msg.payload.paired;
 
           if (this.paired) {
-            console.log('[agent] ✓ Device has existing paired tokens.');
+            console.log('[agent] ✓ Device authenticated and authorized. No pairing required.');
           }
           if (msg.payload.pairingCode) {
             console.log('====================================================');

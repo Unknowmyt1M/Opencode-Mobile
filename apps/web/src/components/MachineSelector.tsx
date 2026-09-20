@@ -117,7 +117,7 @@ export function MachineSelector({
                         <p className="text-xs font-medium truncate">{d.deviceName}</p>
                         <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 font-mono">
                           <span className={`w-1.5 h-1.5 rounded-full ${getStatusDot(d)}`} />
-                          <span>{d.online ? (d.opencodeStatus === 'connected' ? 'OpenCode v' + (d.opencodeVersion || '1.18') : 'OpenCode off') : 'Offline'}</span>
+                          <span>{d.online ? (d.opencodeStatus === 'connected' ? 'OpenCode v' + (d.opencodeVersion || '1.18') : 'OpenCode off') : (d.paired ? 'Authorized • Offline' : 'Offline')}</span>
                         </div>
                       </div>
                     </div>

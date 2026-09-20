@@ -92,6 +92,7 @@ export const AgentHelloMessageSchema = z.object({
     os: z.string().min(1).max(64),
     protocolVersion: z.number().int(),
     capabilities: DeviceCapabilitiesSchema.optional(),
+    agentCredential: z.string().max(256).optional(),
     deviceToken: z.string().max(256).optional(),
   }),
 });

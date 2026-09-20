@@ -1,12 +1,29 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import type { DeviceCapabilities } from '@opencode-remote/protocol';
 
-export interface PairedDeviceRecord {
+export interface PersistedDeviceRecord {
   deviceId: string;
   deviceName: string;
-  tokenHash: string;
-  pairedAt: number;
+  agentCredentialHash?: string;
+  phoneTokenHash?: string;
+  tokenHash?: string; // Backward compatibility alias for phoneTokenHash
+  paired: boolean;
+  createdAt: number;
+  lastSeen: number;
+  pairedAt?: number;
+  agentVersion?: string;
+  os?: string;
+  capabilities?: DeviceCapabilities;
+}
+
+// Backward compatibility type alias
+export type PairedDeviceRecord = PersistedDeviceRecord;
+
+export interface RelayStoreDataV2 {
+  version: 2;
+  devices: PersistedDeviceRecord[];
 }
 
 export interface PairingSession {
@@ -23,12 +40,13 @@ export interface PairingSession {
 
 export class RelayStore {
   private filePath: string;
-  private pairedDevices = new Map<string, PairedDeviceRecord>(); // deviceId -> record
+  private devices = new Map<string, PersistedDeviceRecord>(); // deviceId -> record
   private activePairings = new Map<string, PairingSession>(); // pairingId -> session
   private codeToPairingId = new Map<string, string>(); // code -> pairingId
 
   // Rate limiting for pairing attempts: clientId/IP -> { count, resetAt }
   private clientRateLimits = new Map<string, { count: number; resetAt: number }>();
+  private persistenceHealthy: boolean = true;
 
   constructor(storagePath?: string) {
     if (storagePath) {
@@ -44,69 +62,239 @@ export class RelayStore {
     this.load();
   }
 
+  getStoragePath(): string {
+    return this.filePath;
+  }
+
+  isPersistenceHealthy(): boolean {
+    return this.persistenceHealthy;
+  }
+
   private load() {
-    if (fs.existsSync(this.filePath)) {
-      try {
-        const raw = fs.readFileSync(this.filePath, 'utf8');
-        const data = JSON.parse(raw);
-        for (const dev of data.pairedDevices || []) {
-          // Backward-compat: migrate plaintext token to hash if present
-          let tokenHash = dev.tokenHash;
-          if (!tokenHash && dev.deviceToken) {
-            tokenHash = crypto.createHash('sha256').update(dev.deviceToken).digest('hex');
-          }
-          if (tokenHash) {
-            this.pairedDevices.set(dev.deviceId, {
-              deviceId: dev.deviceId,
-              deviceName: dev.deviceName,
-              tokenHash,
-              pairedAt: dev.pairedAt || Date.now(),
+    if (!fs.existsSync(this.filePath)) {
+      this.persistenceHealthy = true;
+      return;
+    }
+
+    try {
+      const raw = fs.readFileSync(this.filePath, 'utf8');
+      const data = JSON.parse(raw);
+
+      if (data && data.version === 2 && Array.isArray(data.devices)) {
+        // Schema V2: load all device records directly
+        for (const dev of data.devices) {
+          if (dev && dev.deviceId) {
+            const tokenHash = dev.phoneTokenHash || dev.tokenHash;
+            this.devices.set(dev.deviceId, {
+              ...dev,
+              phoneTokenHash: tokenHash,
+              tokenHash, // Keep alias populated
+              paired: Boolean(dev.paired && tokenHash),
+              createdAt: dev.createdAt || Date.now(),
+              lastSeen: dev.lastSeen || Date.now(),
             });
           }
         }
-      } catch {
-        // Fallback to empty store
+      } else if (data && (Array.isArray(data.pairedDevices) || Array.isArray(data.devices))) {
+        // Legacy Schema V1: migrate to V2
+        const legacyList = data.pairedDevices || data.devices || [];
+        for (const dev of legacyList) {
+          if (!dev || !dev.deviceId) continue;
+          let tokenHash = dev.phoneTokenHash || dev.tokenHash;
+          if (!tokenHash && dev.deviceToken) {
+            tokenHash = crypto.createHash('sha256').update(dev.deviceToken).digest('hex');
+          }
+
+          const record: PersistedDeviceRecord = {
+            deviceId: dev.deviceId,
+            deviceName: dev.deviceName || 'Remote Device',
+            agentCredentialHash: dev.agentCredentialHash,
+            phoneTokenHash: tokenHash,
+            tokenHash,
+            paired: Boolean(tokenHash),
+            createdAt: dev.pairedAt || Date.now(),
+            lastSeen: dev.pairedAt || Date.now(),
+            pairedAt: dev.pairedAt || Date.now(),
+            agentVersion: dev.agentVersion,
+            os: dev.os,
+            capabilities: dev.capabilities,
+          };
+          this.devices.set(dev.deviceId, record);
+        }
+        // Save migrated V2 store atomically
+        this.persist();
       }
+      this.persistenceHealthy = true;
+    } catch (err: any) {
+      // Fail closed: do NOT erase any records already in memory!
+      this.persistenceHealthy = false;
+      console.error(`[relay-store] Failed to load store from ${this.filePath} (failing closed):`, err?.message || err);
     }
   }
 
   private persist() {
     try {
-      const data = {
-        pairedDevices: Array.from(this.pairedDevices.values()).map((d) => ({
+      const dir = path.dirname(this.filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      const data: RelayStoreDataV2 = {
+        version: 2,
+        devices: Array.from(this.devices.values()).map((d) => ({
           deviceId: d.deviceId,
           deviceName: d.deviceName,
-          tokenHash: d.tokenHash,
+          agentCredentialHash: d.agentCredentialHash,
+          phoneTokenHash: d.phoneTokenHash,
+          tokenHash: d.phoneTokenHash,
+          paired: d.paired,
+          createdAt: d.createdAt,
+          lastSeen: d.lastSeen,
           pairedAt: d.pairedAt,
+          agentVersion: d.agentVersion,
+          os: d.os,
+          capabilities: d.capabilities,
         })),
       };
+
       // Atomic write via temporary file + atomic rename
       const tempPath = `${this.filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
       fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf8');
       fs.renameSync(tempPath, this.filePath);
-    } catch {
-      // Ignore transient write errors in ephemeral environments
+      this.persistenceHealthy = true;
+    } catch (err: any) {
+      this.persistenceHealthy = false;
+      console.error(`[relay-store] Failed to write store to ${this.filePath}:`, err?.message || err);
     }
   }
 
   isDevicePaired(deviceId: string): boolean {
-    return this.pairedDevices.has(deviceId);
+    const record = this.devices.get(deviceId);
+    return Boolean(record && record.paired && record.phoneTokenHash);
+  }
+
+  verifyAgentCredential(
+    deviceId: string,
+    credential?: string,
+    meta?: {
+      deviceName?: string;
+      agentVersion?: string;
+      os?: string;
+      capabilities?: DeviceCapabilities;
+    }
+  ): boolean {
+    const existing = this.devices.get(deviceId);
+
+    // Case 1: Credential is provided by agent
+    if (credential && typeof credential === 'string' && credential.length >= 10) {
+      const inputHash = crypto.createHash('sha256').update(credential).digest('hex');
+
+      if (existing) {
+        if (existing.agentCredentialHash) {
+          // Enforce timing-safe equality to prevent timing attacks & device impersonation
+          try {
+            const matches = crypto.timingSafeEqual(
+              Buffer.from(inputHash, 'hex'),
+              Buffer.from(existing.agentCredentialHash, 'hex')
+            );
+            if (!matches) {
+              return false;
+            }
+          } catch {
+            return false;
+          }
+        } else {
+          // Legacy migrated record: register and lock agent credential on first connect
+          existing.agentCredentialHash = inputHash;
+        }
+
+        // Update metadata & lastSeen
+        if (meta?.deviceName) existing.deviceName = meta.deviceName;
+        if (meta?.agentVersion) existing.agentVersion = meta.agentVersion;
+        if (meta?.os) existing.os = meta.os;
+        if (meta?.capabilities) existing.capabilities = meta.capabilities;
+        existing.lastSeen = Date.now();
+        this.persist();
+        return true;
+      }
+
+      // New device: enroll credential and create persistent device record
+      const now = Date.now();
+      const newRecord: PersistedDeviceRecord = {
+        deviceId,
+        deviceName: meta?.deviceName || 'Remote Device',
+        agentCredentialHash: inputHash,
+        phoneTokenHash: undefined,
+        tokenHash: undefined,
+        paired: false,
+        createdAt: now,
+        lastSeen: now,
+        agentVersion: meta?.agentVersion,
+        os: meta?.os,
+        capabilities: meta?.capabilities,
+      };
+      this.devices.set(deviceId, newRecord);
+      this.persist();
+      return true;
+    }
+
+    // Case 2: No credential provided
+    if (existing) {
+      // If device already enrolled an agent credential, unauthenticated agents cannot hijack it!
+      if (existing.agentCredentialHash) {
+        return false;
+      }
+      if (meta?.deviceName) existing.deviceName = meta.deviceName;
+      if (meta?.agentVersion) existing.agentVersion = meta.agentVersion;
+      if (meta?.os) existing.os = meta.os;
+      if (meta?.capabilities) existing.capabilities = meta.capabilities;
+      existing.lastSeen = Date.now();
+      this.persist();
+      return true;
+    }
+
+    // New device without credential
+    const now = Date.now();
+    const newRecord: PersistedDeviceRecord = {
+      deviceId,
+      deviceName: meta?.deviceName || 'Remote Device',
+      agentCredentialHash: undefined,
+      phoneTokenHash: undefined,
+      tokenHash: undefined,
+      paired: false,
+      createdAt: now,
+      lastSeen: now,
+      agentVersion: meta?.agentVersion,
+      os: meta?.os,
+      capabilities: meta?.capabilities,
+    };
+    this.devices.set(deviceId, newRecord);
+    this.persist();
+    return true;
   }
 
   verifyDeviceToken(deviceId: string, token?: string): boolean {
     if (!token || typeof token !== 'string' || token.length < 10) return false;
-    const record = this.pairedDevices.get(deviceId);
-    if (!record || !record.tokenHash) return false;
+    const record = this.devices.get(deviceId);
+    if (!record || !record.paired || !record.phoneTokenHash) return false;
 
     const inputHash = crypto.createHash('sha256').update(token).digest('hex');
     try {
       return crypto.timingSafeEqual(
         Buffer.from(inputHash, 'hex'),
-        Buffer.from(record.tokenHash, 'hex')
+        Buffer.from(record.phoneTokenHash, 'hex')
       );
     } catch {
       return false;
     }
+  }
+
+  getDeviceRecord(deviceId: string): PersistedDeviceRecord | undefined {
+    return this.devices.get(deviceId);
+  }
+
+  getAllPersistedDevices(): PersistedDeviceRecord[] {
+    return Array.from(this.devices.values());
   }
 
   isClientRateLimited(clientIdentifier: string): boolean {
@@ -214,7 +402,7 @@ export class RelayStore {
     return undefined;
   }
 
-  approvePairing(pairingId: string): { deviceToken: string; record: PairedDeviceRecord } | undefined {
+  approvePairing(pairingId: string): { deviceToken: string; record: PersistedDeviceRecord } | undefined {
     const session = this.activePairings.get(pairingId);
     if (!session || session.status !== 'pending' || Date.now() > session.expiresAt) {
       return undefined;
@@ -224,16 +412,31 @@ export class RelayStore {
 
     // Generate high-entropy 256-bit CSPRNG token (64 hex characters)
     const deviceToken = `tok_${crypto.randomBytes(32).toString('hex')}`;
-    const tokenHash = crypto.createHash('sha256').update(deviceToken).digest('hex');
+    const phoneTokenHash = crypto.createHash('sha256').update(deviceToken).digest('hex');
 
-    const record: PairedDeviceRecord = {
-      deviceId: session.deviceId,
-      deviceName: session.deviceName,
-      tokenHash,
-      pairedAt: Date.now(),
-    };
+    const now = Date.now();
+    let record = this.devices.get(session.deviceId);
 
-    this.pairedDevices.set(session.deviceId, record);
+    if (record) {
+      record.phoneTokenHash = phoneTokenHash;
+      record.tokenHash = phoneTokenHash;
+      record.paired = true;
+      record.pairedAt = now;
+      record.lastSeen = now;
+      if (session.deviceName) record.deviceName = session.deviceName;
+    } else {
+      record = {
+        deviceId: session.deviceId,
+        deviceName: session.deviceName,
+        phoneTokenHash,
+        tokenHash: phoneTokenHash,
+        paired: true,
+        createdAt: now,
+        lastSeen: now,
+        pairedAt: now,
+      };
+      this.devices.set(session.deviceId, record);
+    }
 
     // Single-use: immediately delete code so it cannot be reused
     this.codeToPairingId.delete(session.code);
@@ -253,7 +456,20 @@ export class RelayStore {
   }
 
   revokeDevice(deviceId: string): boolean {
-    const deleted = this.pairedDevices.delete(deviceId);
+    const record = this.devices.get(deviceId);
+    if (record) {
+      record.phoneTokenHash = undefined;
+      record.tokenHash = undefined;
+      record.paired = false;
+      record.pairedAt = undefined;
+      this.persist();
+      return true;
+    }
+    return false;
+  }
+
+  deleteDevice(deviceId: string): boolean {
+    const deleted = this.devices.delete(deviceId);
     if (deleted) {
       this.persist();
     }
@@ -261,7 +477,7 @@ export class RelayStore {
   }
 
   clear() {
-    this.pairedDevices.clear();
+    this.devices.clear();
     this.activePairings.clear();
     this.codeToPairingId.clear();
     this.clientRateLimits.clear();
