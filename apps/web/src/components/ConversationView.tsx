@@ -22,6 +22,7 @@ import { ReviewView } from './ReviewView';
 import { XtermTerminal } from './XtermTerminal';
 import { AgentActivityView } from './AgentActivityView';
 import { AgentWorkTimeline } from './AgentWorkTimeline';
+import { MarkdownView } from './MarkdownView';
 import { normalizeConversationTurns } from '../utils/activityNormalizer';
 import { Composer } from './Composer';
 
@@ -288,8 +289,8 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
 
                   {/* Unboxed Agent Final Response */}
                   {turn.finalResponse ? (
-                    <div className="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap select-text px-1 py-1 w-full max-w-3xl font-sans">
-                      {turn.finalResponse}
+                    <div className="px-1 py-1 w-full max-w-3xl">
+                      <MarkdownView content={turn.finalResponse} />
                       {isStreaming && isLastTurn && (
                         <span className="inline-block w-1.5 h-3.5 ml-1 bg-indigo-400 animate-pulse align-middle" />
                       )}

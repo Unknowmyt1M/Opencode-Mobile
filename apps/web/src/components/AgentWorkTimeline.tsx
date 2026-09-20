@@ -15,6 +15,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { formatDuration, type TurnGroup, type ActivityItem } from '../utils/activityNormalizer';
+import { MarkdownView } from './MarkdownView';
 
 interface AgentWorkTimelineProps {
   turn: TurnGroup;
@@ -121,8 +122,8 @@ export const AgentWorkTimeline: React.FC<AgentWorkTimelineProps> = ({
                     </div>
                   </div>
                   {isItemExpanded && item.content && (
-                    <div className="mt-1 ml-3 mb-2 p-3 rounded-xl bg-slate-900/90 border border-slate-800 text-[11px] font-mono leading-relaxed text-slate-300 whitespace-pre-wrap select-text max-h-56 overflow-y-auto">
-                      {item.content}
+                    <div className="mt-1 ml-3 mb-2 p-3 rounded-xl bg-slate-900/90 border border-slate-800 text-[11px] leading-relaxed text-slate-300 max-h-56 overflow-y-auto">
+                      <MarkdownView content={item.content} />
                     </div>
                   )}
                 </div>
