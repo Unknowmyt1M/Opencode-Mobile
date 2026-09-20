@@ -108,7 +108,7 @@ export default function App() {
   };
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-[#090d16] text-slate-100 flex flex-col font-sans select-none">
+    <div className="h-full h-dvh w-full overflow-hidden bg-[#090d16] text-slate-100 flex flex-col font-sans select-none">
       {/* Global error banner */}
       {lastError && (
         <div className="bg-rose-950/90 border-b border-rose-800 text-rose-200 text-xs px-4 py-2 flex items-center justify-between z-50 shrink-0">
@@ -437,7 +437,7 @@ export default function App() {
       {/* =========================================================================
           MOBILE TOUCH-OPTIMIZED VIEW (< 1024px)
           ========================================================================= */}
-      <div className="flex lg:hidden flex-1 overflow-hidden w-full h-full">
+      <div className="flex lg:hidden flex-1 min-h-0 overflow-hidden w-full h-full">
         {activeSession && selectedDevice ? (
           <ConversationView
             session={activeSession.session}

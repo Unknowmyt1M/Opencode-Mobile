@@ -137,7 +137,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   ];
 
   return (
-    <div className="flex flex-col h-full w-full bg-[#0b0f19] text-slate-200 overflow-hidden font-sans">
+    <div className="flex flex-col h-full w-full bg-[#0b0f19] text-slate-200 overflow-hidden font-sans min-h-0">
       {/* Session Top Bar */}
       <header className="shrink-0 backdrop-blur-md bg-slate-900/90 border-b border-slate-800 px-4 py-2.5 z-20">
         <div className="flex items-center justify-between">
@@ -211,17 +211,17 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       </header>
 
       {/* Main View Area */}
-      <main className="flex-1 overflow-hidden relative flex flex-col">
+      <main className="flex-1 min-h-0 overflow-hidden relative flex flex-col">
         {(activeTab === 'chat' || hideTabs) && (
           <div
             ref={chatScrollRef}
             onScroll={handleScroll}
-            className="flex-1 overflow-y-auto p-4 space-y-4"
+            className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-4 space-y-3"
           >
             {conversationTurns.length === 0 && !streamingText && (
-              <div className="flex flex-col items-center justify-center min-h-[60vh] text-center text-slate-500 p-4 sm:p-8 space-y-4 max-w-md mx-auto my-auto">
-                <div className="w-14 h-14 rounded-2xl bg-indigo-950/40 border border-indigo-500/30 text-indigo-400 flex items-center justify-center shadow-lg shadow-indigo-950/50">
-                  <Sparkles className="w-7 h-7" />
+              <div className="flex flex-col items-center justify-center text-center text-slate-500 p-2 sm:p-6 space-y-3 max-w-md mx-auto my-auto py-2">
+                <div className="w-12 h-12 rounded-2xl bg-indigo-950/40 border border-indigo-500/30 text-indigo-400 flex items-center justify-center shadow-lg shadow-indigo-950/50">
+                  <Sparkles className="w-6 h-6" />
                 </div>
                 <div>
                   <h3 className="text-sm font-semibold text-slate-200">Ready to code</h3>
@@ -242,7 +242,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                       key={chip.label}
                       type="button"
                       onClick={() => onSendMessage(chip.prompt)}
-                      className="p-3 rounded-2xl bg-slate-900/80 hover:bg-slate-850 border border-slate-800 hover:border-indigo-500/40 text-left transition-all group cursor-pointer shadow-sm active:scale-98"
+                      className="p-2.5 rounded-xl bg-slate-900/80 hover:bg-slate-850 border border-slate-800 hover:border-indigo-500/40 text-left transition-all group cursor-pointer shadow-sm active:scale-98"
                     >
                       <div className="flex items-center gap-2 text-xs font-medium text-slate-300 group-hover:text-white">
                         <span className="text-sm">{chip.icon}</span>
