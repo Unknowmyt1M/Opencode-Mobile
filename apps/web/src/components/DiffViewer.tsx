@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
-import { GitCommit, FileText, WrapText, ChevronDown, ChevronRight } from 'lucide-react';
+import { GitCommit, WrapText, ChevronDown, ChevronRight } from 'lucide-react';
 import type { SnapshotFileDiff } from '@opencode-remote/protocol';
+import { FileTypeIcon } from './FileTypeIcon';
 
 interface DiffViewerProps {
   diffs: SnapshotFileDiff[];
@@ -93,13 +94,14 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                 key={d.file}
                 type="button"
                 onClick={() => onSelectFile(d.file)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-mono shrink-0 transition-all cursor-pointer ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-mono shrink-0 transition-all cursor-pointer flex items-center gap-1.5 ${
                   isSelected
                     ? 'bg-indigo-600 text-white font-medium shadow-sm'
                     : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
                 }`}
               >
-                {name}
+                <FileTypeIcon path={d.file} size={13} className="shrink-0" />
+                <span>{name}</span>
               </button>
             );
           })}
@@ -120,7 +122,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
             ) : (
               <ChevronDown className="w-3.5 h-3.5 text-slate-400 group-hover:text-white transition-transform shrink-0" />
             )}
-            <FileText className="w-4 h-4 text-indigo-400 shrink-0" />
+            <FileTypeIcon path={currentDiff.file} size={16} className="shrink-0" />
             <span className="font-mono text-slate-200 truncate group-hover:text-white">{currentDiff.file}</span>
           </div>
 

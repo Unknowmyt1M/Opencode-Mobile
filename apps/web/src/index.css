@@ -1,4 +1,27 @@
-@import "tailwindcss";
+﻿@import "tailwindcss";
+@import "@fontsource/geist-sans";
+@import "@fontsource/geist-mono";
+
+:root {
+  --font-sans: 'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Premium Linear/Vercel Dark Theme Tokens */
+  --bg-base: #090a0f;
+  --bg-surface: #0e1118;
+  --bg-surface-raised: #141824;
+  --bg-surface-hover: #1b2030;
+  --bg-surface-active: #22283c;
+  --bg-inset: #06070a;
+
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-default: rgba(255, 255, 255, 0.11);
+  --border-strong: rgba(255, 255, 255, 0.18);
+
+  --text-primary: #f1f3f9;
+  --text-secondary: #949eb5;
+  --text-muted: #5e687e;
+}
 
 @layer base {
   *, ::before, ::after {
@@ -16,5 +39,29 @@
     padding: 0;
     overflow: hidden;
     overscroll-behavior: none;
+    background-color: #090a0f;
+    color: #f1f3f9;
+    font-family: var(--font-sans);
+    letter-spacing: -0.01em;
+  }
+
+  code, pre, kbd, samp {
+    font-family: var(--font-mono);
+  }
+
+  /* Sleek modern scrollbars */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.22);
   }
 }

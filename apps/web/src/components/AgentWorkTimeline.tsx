@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { formatDuration, type TurnGroup, type ActivityItem } from '../utils/activityNormalizer';
 import { MarkdownView } from './MarkdownView';
+import { FileTypeIcon } from './FileTypeIcon';
 
 interface AgentWorkTimelineProps {
   turn: TurnGroup;
@@ -156,8 +157,12 @@ export const AgentWorkTimeline: React.FC<AgentWorkTimelineProps> = ({
                       {item.verb}
                     </span>
 
-                    {/* Small Icon */}
-                    {getActivityIcon(item)}
+                    {/* File Type Icon if path/target is a file, else action icon */}
+                    {item.path || (item.type !== 'command' && item.target && !item.target.includes(' ')) ? (
+                      <FileTypeIcon path={item.path || item.target || ''} size={14} className="shrink-0" />
+                    ) : (
+                      getActivityIcon(item)
+                    )}
 
                     {/* Target (filename or command) */}
                     {item.target && (
@@ -225,7 +230,10 @@ export const AgentWorkTimeline: React.FC<AgentWorkTimelineProps> = ({
                     {(item.type === 'edit' || item.type === 'create') && item.path && (
                       <div className="bg-slate-950/90 border border-slate-800/80 rounded-xl p-2.5 font-mono text-[11px] space-y-1.5 shadow-inner">
                         <div className="flex items-center justify-between text-slate-400 text-[10px]">
-                          <span className="truncate">{item.path}</span>
+                          <div className="flex items-center gap-1.5 min-w-0 pr-2">
+                            <FileTypeIcon path={item.path} size={13} className="shrink-0" />
+                            <span className="truncate">{item.path}</span>
+                          </div>
                           {onSelectDiffFile && (
                             <button
                               type="button"

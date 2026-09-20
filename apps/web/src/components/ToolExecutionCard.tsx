@@ -6,6 +6,7 @@ import {
   Check,
 } from 'lucide-react';
 import type { MessagePart, SnapshotFileDiff } from '@opencode-remote/protocol';
+import { FileTypeIcon } from './FileTypeIcon';
 
 interface ToolExecutionCardProps {
   part: MessagePart;
@@ -13,43 +14,7 @@ interface ToolExecutionCardProps {
   onViewFile?: (file: string) => void;
 }
 
-function getExtensionInfo(filePath: string) {
-  const ext = (filePath.split('.').pop() || '').toLowerCase();
-  switch (ext) {
-    case 'ts':
-    case 'tsx':
-      return { label: 'TS', bg: 'bg-blue-500/15 text-blue-400 border-blue-500/30' };
-    case 'js':
-    case 'jsx':
-    case 'mjs':
-      return { label: 'JS', bg: 'bg-amber-500/15 text-amber-400 border-amber-500/30' };
-    case 'md':
-    case 'markdown':
-      return { label: 'MD', bg: 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30' };
-    case 'py':
-      return { label: 'PY', bg: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' };
-    case 'json':
-      return { label: 'JSON', bg: 'bg-orange-500/15 text-orange-400 border-orange-500/30' };
-    case 'css':
-    case 'scss':
-      return { label: 'CSS', bg: 'bg-pink-500/15 text-pink-400 border-pink-500/30' };
-    case 'html':
-      return { label: 'HTML', bg: 'bg-rose-500/15 text-rose-400 border-rose-500/30' };
-    case 'rs':
-      return { label: 'RS', bg: 'bg-red-500/15 text-red-400 border-red-500/30' };
-    case 'go':
-      return { label: 'GO', bg: 'bg-teal-500/15 text-teal-400 border-teal-500/30' };
-    case 'yaml':
-    case 'yml':
-      return { label: 'YML', bg: 'bg-violet-500/15 text-violet-400 border-violet-500/30' };
-    case 'sh':
-    case 'bash':
-    case 'ps1':
-      return { label: 'SH', bg: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' };
-    default:
-      return { label: ext ? ext.toUpperCase().slice(0, 4) : 'FILE', bg: 'bg-zinc-800 text-zinc-400 border-zinc-700' };
-  }
-}
+
 
 export function ToolExecutionCard({ part, diffs, onViewFile }: ToolExecutionCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -105,7 +70,6 @@ export function ToolExecutionCard({ part, diffs, onViewFile }: ToolExecutionCard
     additions = inputContent.split('\n').length;
   }
 
-  const extInfo = getExtensionInfo(cleanTarget);
 
   const handleCopy = (text: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -168,13 +132,9 @@ export function ToolExecutionCard({ part, diffs, onViewFile }: ToolExecutionCard
             {actionVerb}
           </span>
 
-          {/* Extension Badge (if file) */}
+          {/* File Type Icon (if file) */}
           {isFileTool && cleanTarget && (
-            <span
-              className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase border shrink-0 ${extInfo.bg}`}
-            >
-              {extInfo.label}
-            </span>
+            <FileTypeIcon path={cleanTarget} size={14} className="shrink-0" />
           )}
 
           {/* Target / File / Command */}

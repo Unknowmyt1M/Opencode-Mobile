@@ -4,18 +4,12 @@ import {
   ChevronDown,
   Search,
   RefreshCw,
-  FileCode,
   CheckCircle2,
   WrapText,
-  GitBranch,
-  FileSliders,
-  Package,
-  FileJson,
-  FileText,
-  Code2,
   ChevronsUpDown,
 } from 'lucide-react';
 import type { SnapshotFileDiff } from '@opencode-remote/protocol';
+import { FileTypeIcon } from './FileTypeIcon';
 
 interface ReviewViewProps {
   diffs: SnapshotFileDiff[];
@@ -81,49 +75,7 @@ function parsePatch(patch?: string): ParsedDiffLine[] {
 }
 
 function getFileIcon(filename: string) {
-  const name = filename.toLowerCase();
-  if (name === '.gitignore' || name.endsWith('.gitmodules')) {
-    return <GitBranch className="w-3.5 h-3.5 text-rose-500 shrink-0" />;
-  }
-  if (name.endsWith('.yaml') || name.endsWith('.yml')) {
-    return <FileSliders className="w-3.5 h-3.5 text-amber-400 shrink-0" />;
-  }
-  if (name === 'package.json' || name.endsWith('.package.json')) {
-    return <Package className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
-  }
-  if (name.includes('tsconfig') || name.endsWith('.ts') || name.endsWith('.tsx')) {
-    return (
-      <span className="text-[10px] font-bold text-sky-400 font-mono tracking-tight shrink-0">
-        TS
-      </span>
-    );
-  }
-  if (name.endsWith('.js') || name.endsWith('.jsx') || name.endsWith('.mjs')) {
-    return (
-      <span className="text-[10px] font-bold text-amber-400 font-mono tracking-tight shrink-0">
-        JS
-      </span>
-    );
-  }
-  if (name.endsWith('.py')) {
-    return <Code2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
-  }
-  if (name.endsWith('.html')) {
-    return <Code2 className="w-3.5 h-3.5 text-orange-400 shrink-0" />;
-  }
-  if (name.endsWith('.css') || name.endsWith('.scss')) {
-    return <FileCode className="w-3.5 h-3.5 text-cyan-400 shrink-0" />;
-  }
-  if (name.endsWith('.json')) {
-    return <FileJson className="w-3.5 h-3.5 text-amber-300 shrink-0" />;
-  }
-  if (name.startsWith('.env')) {
-    return <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />;
-  }
-  if (name === '.npmrc') {
-    return <Package className="w-3.5 h-3.5 text-rose-400 shrink-0" />;
-  }
-  return <FileCode className="w-3.5 h-3.5 text-slate-400 shrink-0" />;
+  return <FileTypeIcon path={filename} size={15} />;
 }
 
 export const ReviewView: React.FC<ReviewViewProps> = ({
@@ -344,7 +296,10 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
                     <div className="border-t border-slate-800/80 bg-[#080b12] overflow-hidden">
                       {/* Diff Line Wrap Control Bar */}
                       <div className="flex items-center justify-between px-3 py-1 bg-slate-900/70 border-b border-slate-800/60 text-[10px] text-slate-400 font-mono">
-                        <span className="truncate text-slate-500">{diff.file}</span>
+                        <div className="flex items-center gap-1.5 min-w-0 pr-2">
+                          <FileTypeIcon path={diff.file} size={13} className="shrink-0" />
+                          <span className="truncate text-slate-400">{diff.file}</span>
+                        </div>
                         <button
                           type="button"
                           onClick={(e) => {
