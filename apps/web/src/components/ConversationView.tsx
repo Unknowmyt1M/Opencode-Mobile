@@ -21,8 +21,8 @@ import { type WorkspaceTab } from '../useRelay';
 import { ReviewView } from './ReviewView';
 import { XtermTerminal } from './XtermTerminal';
 import { AgentActivityView } from './AgentActivityView';
-import { ReasoningView } from './ReasoningView';
-import { ToolExecutionCard } from './ToolExecutionCard';
+import { AgentWorkTimeline } from './AgentWorkTimeline';
+import { normalizeConversationTurns } from '../utils/activityNormalizer';
 import { Composer } from './Composer';
 
 interface ConversationViewProps {
@@ -94,6 +94,11 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const bottomAnchorRef = useRef<HTMLDivElement>(null);
+
+  const conversationTurns = React.useMemo(
+    () => normalizeConversationTurns(messages, streamingText, isStreaming, diffs),
+    [messages, streamingText, isStreaming, diffs]
+  );
 
   useEffect(() => {
     if (activeTab === 'chat' && !showScrollBottom) {
@@ -212,7 +217,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
             onScroll={handleScroll}
             className="flex-1 overflow-y-auto p-4 space-y-4"
           >
-            {messages.length === 0 && !streamingText && (
+            {conversationTurns.length === 0 && !streamingText && (
               <div className="flex flex-col items-center justify-center min-h-[60vh] text-center text-slate-500 p-4 sm:p-8 space-y-4 max-w-md mx-auto my-auto">
                 <div className="w-14 h-14 rounded-2xl bg-indigo-950/40 border border-indigo-500/30 text-indigo-400 flex items-center justify-center shadow-lg shadow-indigo-950/50">
                   <Sparkles className="w-7 h-7" />
@@ -248,76 +253,58 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
               </div>
             )}
 
-            {messages.map((msg) => {
-              const reasoningParts = (msg.parts || []).filter((p) => p.type === 'reasoning');
-              const toolParts = (msg.parts || []).filter((p) => p.type === 'tool');
-              const cleanContent = msg.content
-                .replace(/<supermemory-recall>[\s\S]*?<\/supermemory-recall>/gi, '')
-                .trim();
+            {conversationTurns.map((turn, turnIdx) => {
+              const cleanUserPrompt = turn.userMessage
+                ? turn.userMessage.content
+                    .replace(/<supermemory-recall>[\s\S]*?<\/supermemory-recall>/gi, '')
+                    .trim()
+                : null;
+              const isLastTurn = turnIdx === conversationTurns.length - 1;
 
-              if (msg.role === 'user') {
-                return (
-                  <div key={msg.id} className="flex flex-col items-end w-full">
-                    <div className="max-w-[88%] sm:max-w-[80%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-md shadow-indigo-600/20 bg-indigo-600 text-white whitespace-pre-wrap select-text">
-                      {cleanContent}
-                    </div>
-                  </div>
-                );
-              }
-
-              // Agent message: Clean unboxed presentation
               return (
-                <div key={msg.id} className="flex flex-col items-start w-full space-y-2 py-0.5">
-                  {/* Collapsible reasoning if present */}
-                  {reasoningParts.map((rp, rIdx) => (
-                    <div key={rp.id || rIdx} className="w-full max-w-3xl">
-                      <ReasoningView
-                        reasoning={rp.text || ''}
-                        duration={rp.duration}
-                      />
-                    </div>
-                  ))}
-
-                  {/* Tool execution cards if present */}
-                  {toolParts.length > 0 && (
-                    <div className="w-full max-w-3xl space-y-1.5">
-                      {toolParts.map((tp, tIdx) => (
-                        <ToolExecutionCard
-                          key={tp.callID || tp.id || tIdx}
-                          part={tp}
-                          diffs={diffs}
-                          onViewFile={(f) => {
-                            onSelectDiffFile(f);
-                            onSelectTab('review');
-                          }}
-                        />
-                      ))}
+                <div key={turn.id} className="w-full space-y-2 py-0.5">
+                  {/* User message inside bubble */}
+                  {turn.userMessage && cleanUserPrompt && (
+                    <div className="flex flex-col items-end w-full pb-1">
+                      <div className="max-w-[88%] sm:max-w-[80%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-md shadow-indigo-600/20 bg-indigo-600 text-white whitespace-pre-wrap select-text">
+                        {cleanUserPrompt}
+                      </div>
                     </div>
                   )}
 
-                  {/* Main text content without background box */}
-                  {cleanContent ? (
-                    <div className="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap select-text px-1 py-1 w-full max-w-3xl font-sans">
-                      {cleanContent}
+                  {/* Agent Work Timeline (Worked for X ▾, Thought for Y, Analyzed, Edited, Created, Ran...) */}
+                  {turn.agentRun.hasActiveWork && (
+                    <div className="w-full max-w-3xl">
+                      <AgentWorkTimeline
+                        turn={turn}
+                        defaultExpanded={isLastTurn || turn.agentRun.isStreaming}
+                        onSelectDiffFile={(file) => {
+                          onSelectDiffFile(file);
+                          onSelectTab('review');
+                        }}
+                      />
                     </div>
-                  ) : null}
+                  )}
+
+                  {/* Unboxed Agent Final Response */}
+                  {turn.finalResponse ? (
+                    <div className="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap select-text px-1 py-1 w-full max-w-3xl font-sans">
+                      {turn.finalResponse}
+                      {isStreaming && isLastTurn && (
+                        <span className="inline-block w-1.5 h-3.5 ml-1 bg-indigo-400 animate-pulse align-middle" />
+                      )}
+                    </div>
+                  ) : (
+                    isStreaming && isLastTurn && !turn.agentRun.hasActiveWork && (
+                      <div className="flex items-center gap-1 text-[10px] text-amber-400 font-mono px-1 py-1">
+                        <Sparkles className="w-3 h-3 animate-spin" />
+                        <span>OpenCode reasoning & drafting...</span>
+                      </div>
+                    )
+                  )}
                 </div>
               );
             })}
-
-            {/* Live Streaming Assistant Output without box */}
-            {streamingText && (
-              <div className="flex flex-col items-start w-full space-y-1 py-1">
-                <div className="flex items-center gap-1 text-[10px] text-amber-400 font-mono px-1">
-                  <Sparkles className="w-3 h-3 animate-spin" />
-                  <span>OpenCode reasoning & drafting...</span>
-                </div>
-                <div className="text-xs text-slate-100 leading-relaxed whitespace-pre-wrap select-text px-1 w-full max-w-3xl">
-                  {streamingText}
-                  <span className="inline-block w-1.5 h-3.5 ml-1 bg-indigo-400 animate-pulse align-middle" />
-                </div>
-              </div>
-            )}
 
             <div ref={bottomAnchorRef} />
           </div>

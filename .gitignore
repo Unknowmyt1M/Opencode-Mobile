@@ -10,3 +10,4 @@ build
 .live-relay-store*.json
 .DS_Store
 Thumbs.db
+website/
