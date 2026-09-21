@@ -707,7 +707,9 @@ export function buildRelayServer(options: RelayOptions = {}): {
             case 'OPENCODE_EVENT':
             case 'PERMISSION_REQUEST':
             case 'PTY_OUTPUT':
-            case 'PTY_CLOSED': {
+            case 'PTY_CLOSED':
+            case 'TODO_UPDATED':
+            case 'SESSION_DIFF_UPDATED': {
               const { deviceId } = message.payload as { deviceId?: string };
               if (deviceId) {
                 if (message.type === 'PTY_CLOSED' && (message.payload as any).ptyId) {
@@ -733,7 +735,8 @@ export function buildRelayServer(options: RelayOptions = {}): {
             case 'SESSION_ABORT':
             case 'MODEL_LIST':
             case 'PERMISSION_LIST':
-            case 'PERMISSION_REPLY': {
+            case 'PERMISSION_REPLY':
+            case 'TODO_LIST_REQUEST': {
               const { deviceId, deviceToken } = message.payload as { deviceId: string; deviceToken?: string };
               if (!store.verifyDeviceToken(deviceId, deviceToken)) {
                 socket.send(
@@ -812,7 +815,8 @@ export function buildRelayServer(options: RelayOptions = {}): {
             case 'SESSION_ABORT_RESULT':
             case 'MODEL_LIST_RESULT':
             case 'PERMISSION_LIST_RESULT':
-            case 'PERMISSION_REPLY_RESULT': {
+            case 'PERMISSION_REPLY_RESULT':
+            case 'TODO_LIST_RESULT': {
               const clientSocket = requestToClient.get(message.id);
               if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
                 clientSocket.send(JSON.stringify(message));

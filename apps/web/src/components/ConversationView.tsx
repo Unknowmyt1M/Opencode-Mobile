@@ -16,15 +16,54 @@ import type {
   PtySession,
   ModelInfo,
   PermissionItem,
+  TodoItem,
 } from '@opencode-remote/protocol';
 import { type WorkspaceTab } from '../useRelay';
 import { ReviewView } from './ReviewView';
 import { XtermTerminal } from './XtermTerminal';
-import { AgentActivityView } from './AgentActivityView';
 import { AgentWorkTimeline } from './AgentWorkTimeline';
 import { MarkdownView } from './MarkdownView';
-import { normalizeConversationTurns } from '../utils/activityNormalizer';
+import { normalizeConversationTurns, type TurnElement, type ActivityItem } from '../utils/activityNormalizer';
 import { Composer } from './Composer';
+import { TodoWidget } from './TodoWidget';
+import { QueuedMessages } from './QueuedMessages';
+import type { QueuedMessage } from '../types/queue';
+
+function groupTurnElements(elements: TurnElement[]) {
+  const chunks: Array<
+    | { type: 'activities'; activities: ActivityItem[]; key: string }
+    | { type: 'text'; content: string; key: string }
+  > = [];
+
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    if (el.type === 'activity') {
+      const lastChunk = chunks[chunks.length - 1];
+      if (lastChunk && lastChunk.type === 'activities') {
+        lastChunk.activities.push(el.activity);
+      } else {
+        chunks.push({
+          type: 'activities',
+          activities: [el.activity],
+          key: `chunk_act_${el.id}_${i}`,
+        });
+      }
+    } else if (el.type === 'text') {
+      const lastChunk = chunks[chunks.length - 1];
+      if (lastChunk && lastChunk.type === 'text') {
+        lastChunk.content = `${lastChunk.content}\n\n${el.content}`;
+      } else {
+        chunks.push({
+          type: 'text',
+          content: el.content,
+          key: `chunk_text_${el.id}_${i}`,
+        });
+      }
+    }
+  }
+
+  return chunks;
+}
 
 interface ConversationViewProps {
   session: OpenCodeSession;
@@ -40,6 +79,8 @@ interface ConversationViewProps {
   onSendMessage: (content: string) => void;
   onClose: () => void;
   onRefreshDiff: () => void;
+  // Todos
+  todos?: TodoItem[];
   // Phase 3 extensions
   onAbort?: () => void;
   models?: ModelInfo[];
@@ -59,6 +100,15 @@ interface ConversationViewProps {
   onRefreshPtys?: () => void;
   // Flag to hide tabs in desktop 3-pane layout
   hideTabs?: boolean;
+  // Queue
+  queuedMessages?: QueuedMessage[];
+  editingQueueItem?: { id: string; content: string } | null;
+  onEditQueuedMessage?: (item: QueuedMessage) => void;
+  onSaveQueuedMessageEdit?: (id: string, newContent: string) => void;
+  onCancelQueuedMessageEdit?: () => void;
+  onDeleteQueuedMessage?: (id: string) => void;
+  onSendQueuedMessageNow?: (id: string) => void;
+  onRetryQueuedMessage?: (id: string) => void;
 }
 
 export const ConversationView: React.FC<ConversationViewProps> = ({
@@ -75,6 +125,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   onSendMessage,
   onClose,
   onRefreshDiff,
+  todos = [],
   onAbort,
   models = [],
   selectedModel = null,
@@ -91,6 +142,14 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   subscribePtyData,
   onRefreshPtys,
   hideTabs = false,
+  queuedMessages = [],
+  editingQueueItem = null,
+  onEditQueuedMessage,
+  onSaveQueuedMessageEdit,
+  onCancelQueuedMessageEdit,
+  onDeleteQueuedMessage,
+  onSendQueuedMessageNow,
+  onRetryQueuedMessage,
 }) => {
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
@@ -273,35 +332,65 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                     </div>
                   )}
 
-                  {/* Agent Work Timeline (Worked for X ▾, Thought for Y, Analyzed, Edited, Created, Ran...) */}
-                  {turn.agentRun.hasActiveWork && (
-                    <div className="w-full max-w-3xl">
-                      <AgentWorkTimeline
-                        turn={turn}
-                        defaultExpanded={isLastTurn || turn.agentRun.isStreaming}
-                        onSelectDiffFile={(file) => {
-                          onSelectDiffFile(file);
-                          onSelectTab('review');
-                        }}
-                      />
-                    </div>
+                  {/* Interleaved Chronological Elements (Thought ➔ Tool ➔ Text ➔ Thought ➔ Tool ➔ Text) */}
+                  {turn.elements && turn.elements.length > 0 ? (
+                    groupTurnElements(turn.elements).map((chunk) => {
+                      if (chunk.type === 'activities') {
+                        return (
+                          <div key={chunk.key} className="w-full max-w-3xl">
+                            <AgentWorkTimeline
+                              activities={chunk.activities}
+                              isStreaming={isLastTurn && turn.agentRun.isStreaming}
+                              defaultExpanded={isLastTurn || turn.agentRun.isStreaming}
+                              onSelectDiffFile={(file) => {
+                                onSelectDiffFile(file);
+                                onSelectTab('review');
+                              }}
+                            />
+                          </div>
+                        );
+                      }
+                      if (chunk.type === 'text') {
+                        return (
+                          <div key={chunk.key} className="px-1 py-1 w-full max-w-3xl">
+                            <MarkdownView content={chunk.content} />
+                          </div>
+                        );
+                      }
+                      return null;
+                    })
+                  ) : (
+                    <>
+                      {/* Fallback for legacy turns without elements */}
+                      {turn.agentRun.hasActiveWork && (
+                        <div className="w-full max-w-3xl">
+                          <AgentWorkTimeline
+                            turn={turn}
+                            defaultExpanded={isLastTurn || turn.agentRun.isStreaming}
+                            onSelectDiffFile={(file) => {
+                              onSelectDiffFile(file);
+                              onSelectTab('review');
+                            }}
+                          />
+                        </div>
+                      )}
+                      {turn.finalResponse && (
+                        <div className="px-1 py-1 w-full max-w-3xl">
+                          <MarkdownView content={turn.finalResponse} />
+                        </div>
+                      )}
+                    </>
                   )}
 
-                  {/* Unboxed Agent Final Response */}
-                  {turn.finalResponse ? (
-                    <div className="px-1 py-1 w-full max-w-3xl">
-                      <MarkdownView content={turn.finalResponse} />
-                      {isStreaming && isLastTurn && (
-                        <span className="inline-block w-1.5 h-3.5 ml-1 bg-indigo-400 animate-pulse align-middle" />
-                      )}
+                  {isStreaming && isLastTurn && turn.finalResponse && (
+                    <span className="inline-block w-1.5 h-3.5 ml-1 bg-indigo-400 animate-pulse align-middle" />
+                  )}
+
+                  {isStreaming && isLastTurn && !turn.agentRun.hasActiveWork && !turn.finalResponse && (
+                    <div className="flex items-center gap-1 text-[10px] text-amber-400 font-mono px-1 py-1">
+                      <Sparkles className="w-3 h-3 animate-spin" />
+                      <span>OpenCode reasoning & drafting...</span>
                     </div>
-                  ) : (
-                    isStreaming && isLastTurn && !turn.agentRun.hasActiveWork && (
-                      <div className="flex items-center gap-1 text-[10px] text-amber-400 font-mono px-1 py-1">
-                        <Sparkles className="w-3 h-3 animate-spin" />
-                        <span>OpenCode reasoning & drafting...</span>
-                      </div>
-                    )
                   )}
                 </div>
               );
@@ -338,7 +427,13 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
 
         {/* Timeline / Activity Tab */}
         {!hideTabs && activeTab === 'activity' && (
-          <AgentActivityView messages={messages} isStreaming={isStreaming} />
+          <div className="p-4 max-w-3xl mx-auto space-y-4">
+            {conversationTurns.filter((t) => t.agentRun.hasActiveWork).map((t) => (
+              <div key={t.id} className="p-3 bg-slate-900/50 rounded-xl border border-slate-800/80">
+                <AgentWorkTimeline turn={t} defaultExpanded={true} onSelectDiffFile={onSelectDiffFile} />
+              </div>
+            ))}
+          </div>
         )}
 
         {/* Jump to bottom button - Floating pill properly positioned */}
@@ -354,18 +449,44 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
         )}
       </main>
 
-      {/* Composer Input Bar (only shown in chat tab or in desktop split view) */}
+      {/* Composer Input Bar, Todo Widget & Queued Messages */}
       {(activeTab === 'chat' || hideTabs) && (
-        <Composer
-          onSendMessage={onSendMessage}
-          isStreaming={isStreaming}
-          onAbort={() => onAbort?.()}
-          models={models}
-          selectedModel={selectedModel}
-          onSelectModel={(m) => onSelectModel?.(m)}
-          permissions={permissions}
-          onReplyPermission={onReplyPermission}
-        />
+        <div className="w-full shrink-0 flex flex-col">
+          {/* Todo Widget */}
+          {todos && todos.length > 0 && (
+            <div className="px-3 sm:px-4 max-w-3xl mx-auto w-full mb-2">
+              <TodoWidget todos={todos} />
+            </div>
+          )}
+
+          {/* Queued Messages Card */}
+          {queuedMessages && queuedMessages.length > 0 && (
+            <div className="px-3 sm:px-4 max-w-3xl mx-auto w-full mb-2">
+              <QueuedMessages
+                queue={queuedMessages}
+                isStreaming={isStreaming}
+                onSendNow={(id) => onSendQueuedMessageNow?.(id)}
+                onEdit={(item) => onEditQueuedMessage?.(item)}
+                onDelete={(id) => onDeleteQueuedMessage?.(id)}
+                onRetry={(id) => onRetryQueuedMessage?.(id)}
+              />
+            </div>
+          )}
+
+          <Composer
+            onSendMessage={onSendMessage}
+            isStreaming={isStreaming}
+            onAbort={() => onAbort?.()}
+            models={models}
+            selectedModel={selectedModel}
+            onSelectModel={(m) => onSelectModel?.(m)}
+            permissions={permissions}
+            onReplyPermission={onReplyPermission}
+            editingItem={editingQueueItem}
+            onSaveEdit={onSaveQueuedMessageEdit}
+            onCancelEdit={onCancelQueuedMessageEdit}
+          />
+        </div>
       )}
     </div>
   );

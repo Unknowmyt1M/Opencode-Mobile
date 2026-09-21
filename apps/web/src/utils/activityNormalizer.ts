@@ -8,7 +8,8 @@ export type ActivityType =
   | 'delete'
   | 'command'
   | 'search'
-  | 'explore';
+  | 'explore'
+  | 'todo';
 
 export interface ActivityItem {
   id: string;
@@ -30,6 +31,10 @@ export interface ActivityItem {
   isStreaming?: boolean;
 }
 
+export type TurnElement =
+  | { id: string; type: 'activity'; activity: ActivityItem }
+  | { id: string; type: 'text'; content: string };
+
 export interface TurnGroup {
   id: string;
   userMessage?: SessionMessage;
@@ -41,6 +46,7 @@ export interface TurnGroup {
     hasActiveWork: boolean;
   };
   finalResponse: string;
+  elements: TurnElement[];
   completedAt?: number;
 }
 
@@ -121,6 +127,7 @@ export function normalizeConversationTurns(
         hasActiveWork: false,
       },
       finalResponse: '',
+      elements: [],
       completedAt: undefined,
     };
     turns.push(currentTurn);
@@ -141,6 +148,11 @@ export function normalizeConversationTurns(
 
     const turn = currentTurn!;
     const parts = msg.parts || [];
+
+    const addActivity = (act: ActivityItem) => {
+      turn.agentRun.activities.push(act);
+      turn.elements.push({ id: act.id, type: 'activity', activity: act });
+    };
 
     // Track timestamps for duration calculation
     let firstPartTime: number | undefined = msg.createdAt;
@@ -167,7 +179,7 @@ export function normalizeConversationTurns(
           if (partAny.time.end) lastPartTime = Math.max(lastPartTime, partAny.time.end);
         }
 
-        turn.agentRun.activities.push({
+        addActivity({
           id: partId,
           type: 'thought',
           verb: 'Thought for',
@@ -191,7 +203,7 @@ export function normalizeConversationTurns(
 
         // A. Analyze / Read
         if (['read', 'view', 'cat', 'open_file', 'view_file', 'analyze'].includes(toolName)) {
-          turn.agentRun.activities.push({
+          addActivity({
             id: partId,
             type: 'analyze',
             verb: 'Analyzed',
@@ -239,7 +251,7 @@ export function normalizeConversationTurns(
           const actType: ActivityType = isDelete ? 'delete' : isCreate ? 'create' : 'edit';
           const verb = isDelete ? 'Deleted' : isCreate ? 'Created' : 'Edited';
 
-          turn.agentRun.activities.push({
+          addActivity({
             id: partId,
             type: actType,
             verb,
@@ -259,7 +271,7 @@ export function normalizeConversationTurns(
         if (['bash', 'terminal', 'sh', 'exec', 'command', 'run_command'].includes(toolName)) {
           const cmd = input.command || input.cmd || input.CommandLine || String(state.input || '');
           const output = meta.output || state.output;
-          turn.agentRun.activities.push({
+          addActivity({
             id: partId,
             type: 'command',
             verb: 'Ran',
@@ -275,7 +287,7 @@ export function normalizeConversationTurns(
         // D. Search / Grep
         if (['grep', 'search', 'grep_search', 'ripgrep', 'find_in_files'].includes(toolName)) {
           const query = input.query || input.pattern || input.search || '';
-          turn.agentRun.activities.push({
+          addActivity({
             id: partId,
             type: 'search',
             verb: 'Searched',
@@ -290,7 +302,7 @@ export function normalizeConversationTurns(
         // E. Explore / Glob / Filesystem
         if (['glob', 'list', 'list_files', 'find', 'find_by_name', 'list_dir'].includes(toolName)) {
           const pattern = input.pattern || input.path || '';
-          turn.agentRun.activities.push({
+          addActivity({
             id: partId,
             type: 'explore',
             verb: 'Explored',
@@ -301,8 +313,26 @@ export function normalizeConversationTurns(
           continue;
         }
 
-        // F. Generic fallback tool
-        turn.agentRun.activities.push({
+        // F. Todo / Tasks
+        if (['todowrite', 'todoupdate', 'todo', 'todo_write', 'update_todo'].includes(toolName)) {
+          const todosList = input.todos || input.todoList || [];
+          const count = Array.isArray(todosList) ? todosList.length : 1;
+          const verb = 'Updated';
+          const target = `${count} task${count === 1 ? '' : 's'}`;
+          addActivity({
+            id: partId,
+            type: 'todo',
+            verb,
+            label: verb,
+            target,
+            content: typeof state.output === 'string' ? state.output : JSON.stringify(input, null, 2),
+            timestamp: msg.createdAt,
+          });
+          continue;
+        }
+
+        // G. Generic fallback tool
+        addActivity({
           id: partId,
           type: 'analyze',
           verb: 'Executed',
@@ -320,6 +350,7 @@ export function normalizeConversationTurns(
           .trim();
         if (clean) {
           turn.finalResponse = turn.finalResponse ? `${turn.finalResponse}\n\n${clean}` : clean;
+          turn.elements.push({ id: partId, type: 'text', content: clean });
         }
       }
     }
@@ -331,6 +362,9 @@ export function normalizeConversationTurns(
         .trim();
       if (clean) {
         turn.finalResponse = clean;
+        if (turn.elements.length === 0 || turn.elements[turn.elements.length - 1].type !== 'text') {
+          turn.elements.push({ id: `${msg.id}_content`, type: 'text', content: clean });
+        }
       }
     }
 
@@ -358,12 +392,22 @@ export function normalizeConversationTurns(
       activeTurn.agentRun.durationLabel = 'Working...';
       activeTurn.agentRun.hasActiveWork = true;
     }
-    // Append or update streaming text to finalResponse
+    // Append or update streaming text to finalResponse & elements
     if (streamingText) {
       const cleanStreaming = streamingText
         .replace(/<supermemory-recall>[\s\S]*?<\/supermemory-recall>/gi, '')
         .trim();
       activeTurn.finalResponse = cleanStreaming;
+      const lastElem = activeTurn.elements[activeTurn.elements.length - 1];
+      if (lastElem && lastElem.type === 'text') {
+        lastElem.content = cleanStreaming;
+      } else if (cleanStreaming) {
+        activeTurn.elements.push({
+          id: `streaming_text_${Date.now()}`,
+          type: 'text',
+          content: cleanStreaming,
+        });
+      }
     }
   }
 

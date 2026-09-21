@@ -19,7 +19,8 @@ import { Dashboard } from './components/Dashboard';
 import { ConversationView } from './components/ConversationView';
 import { ReviewView } from './components/ReviewView';
 import { XtermTerminal } from './components/XtermTerminal';
-import { AgentActivityView } from './components/AgentActivityView';
+import { AgentWorkTimeline } from './components/AgentWorkTimeline';
+import { normalizeConversationTurns, type TurnGroup } from './utils/activityNormalizer';
 
 export default function App() {
   const {
@@ -66,6 +67,14 @@ export default function App() {
     permissions,
     fetchPermissions,
     replyPermission,
+    todos,
+    queuedMessages,
+    editingQueueItem,
+    setEditingQueueItem,
+    editQueuedMessage,
+    deleteQueuedMessage,
+    sendQueuedMessageNow,
+    retryQueuedMessage,
   } = useRelay();
 
   // Right pane tab on desktop (review, terminal, activity)
@@ -277,7 +286,12 @@ export default function App() {
                 setRightPanelTab('review');
               }}
               onSendMessage={(content) =>
-                sendMessage(selectedDevice.deviceId, activeSession.session.id, content)
+                sendMessage(
+                  selectedDevice.deviceId,
+                  activeSession.session.id,
+                  content,
+                  selectedModel || undefined
+                )
               }
               onClose={closeActiveSession}
               onRefreshDiff={() =>
@@ -298,6 +312,31 @@ export default function App() {
               onResizePty={resizePty}
               subscribePtyData={subscribePtyData}
               onRefreshPtys={fetchPtys}
+              todos={todos}
+              queuedMessages={queuedMessages}
+              editingQueueItem={editingQueueItem}
+              onEditQueuedMessage={setEditingQueueItem}
+              onSaveQueuedMessageEdit={(id, content) => {
+                if (activeSession) {
+                  editQueuedMessage(activeSession.session.id, id, content);
+                }
+              }}
+              onCancelQueuedMessageEdit={() => setEditingQueueItem(null)}
+              onDeleteQueuedMessage={(id) => {
+                if (activeSession) {
+                  deleteQueuedMessage(activeSession.session.id, id);
+                }
+              }}
+              onSendQueuedMessageNow={(id) => {
+                if (activeSession) {
+                  sendQueuedMessageNow(activeSession.session.id, id);
+                }
+              }}
+              onRetryQueuedMessage={(id) => {
+                if (activeSession) {
+                  retryQueuedMessage(activeSession.session.id, id);
+                }
+              }}
               hideTabs={true}
             />
           ) : selectedDevice && !selectedDevice.paired ? (
@@ -425,10 +464,19 @@ export default function App() {
             )}
 
             {rightPanelTab === 'activity' && (
-              <AgentActivityView
-                messages={activeSession ? activeSession.messages : []}
-                isStreaming={isStreaming}
-              />
+              <div className="p-4 space-y-4 overflow-y-auto h-full">
+                {activeSession ? (
+                  normalizeConversationTurns(activeSession.messages)
+                    .filter((t: TurnGroup) => t.agentRun.hasActiveWork)
+                    .map((t: TurnGroup) => (
+                      <div key={t.id} className="p-3 bg-slate-900/50 rounded-xl border border-slate-800/80">
+                        <AgentWorkTimeline turn={t} defaultExpanded={true} onSelectDiffFile={setActiveDiffFile} />
+                      </div>
+                    ))
+                ) : (
+                  <div className="p-8 text-center text-slate-500 text-xs">No active timeline</div>
+                )}
+              </div>
             )}
           </div>
         </section>
@@ -454,7 +502,12 @@ export default function App() {
               setActiveTab('review');
             }}
             onSendMessage={(content) =>
-              sendMessage(selectedDevice.deviceId, activeSession.session.id, content)
+              sendMessage(
+                selectedDevice.deviceId,
+                activeSession.session.id,
+                content,
+                selectedModel || undefined
+              )
             }
             onClose={closeActiveSession}
             onRefreshDiff={() =>
@@ -475,6 +528,31 @@ export default function App() {
             onResizePty={resizePty}
             subscribePtyData={subscribePtyData}
             onRefreshPtys={fetchPtys}
+            todos={todos}
+            queuedMessages={queuedMessages}
+            editingQueueItem={editingQueueItem}
+            onEditQueuedMessage={setEditingQueueItem}
+            onSaveQueuedMessageEdit={(id, content) => {
+              if (activeSession) {
+                editQueuedMessage(activeSession.session.id, id, content);
+              }
+            }}
+            onCancelQueuedMessageEdit={() => setEditingQueueItem(null)}
+            onDeleteQueuedMessage={(id) => {
+              if (activeSession) {
+                deleteQueuedMessage(activeSession.session.id, id);
+              }
+            }}
+            onSendQueuedMessageNow={(id) => {
+              if (activeSession) {
+                sendQueuedMessageNow(activeSession.session.id, id);
+              }
+            }}
+            onRetryQueuedMessage={(id) => {
+              if (activeSession) {
+                retryQueuedMessage(activeSession.session.id, id);
+              }
+            }}
             hideTabs={false}
           />
         ) : (

@@ -295,6 +295,10 @@ export interface MessageSendPayload {
   sessionId: string;
   content: string;
   deviceToken?: string;
+  model?: {
+    providerID: string;
+    modelID: string;
+  };
 }
 
 export interface MessageSendAckPayload {
@@ -524,5 +528,39 @@ export interface PermissionReplyResultPayload {
   requestId: string;
   success: boolean;
 }
+
+// ==========================================
+// Phase 3 Redesign: Todo List & Real-Time Sync Payloads
+// ==========================================
+export interface TodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  priority: 'high' | 'medium' | 'low';
+}
+
+export interface TodoListRequestPayload {
+  deviceId: string;
+  sessionId: string;
+  deviceToken?: string;
+}
+
+export interface TodoListResultPayload {
+  deviceId: string;
+  sessionId: string;
+  todos: TodoItem[];
+}
+
+export interface TodoUpdatedPayload {
+  deviceId: string;
+  sessionId: string;
+  todos: TodoItem[];
+}
+
+export interface SessionDiffUpdatedPayload {
+  deviceId: string;
+  sessionId: string;
+  diff: SnapshotFileDiff[];
+}
+
 
 

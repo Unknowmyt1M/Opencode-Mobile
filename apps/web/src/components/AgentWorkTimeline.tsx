@@ -13,13 +13,17 @@ import {
   FileX2,
   FileEdit,
   ExternalLink,
+  CheckSquare2,
 } from 'lucide-react';
 import { formatDuration, type TurnGroup, type ActivityItem } from '../utils/activityNormalizer';
 import { MarkdownView } from './MarkdownView';
 import { FileTypeIcon } from './FileTypeIcon';
 
 interface AgentWorkTimelineProps {
-  turn: TurnGroup;
+  turn?: TurnGroup;
+  activities?: ActivityItem[];
+  isStreaming?: boolean;
+  durationLabel?: string;
   defaultExpanded?: boolean;
   onSelectDiffFile?: (file: string) => void;
 }
@@ -28,6 +32,8 @@ function getActivityIcon(item: ActivityItem) {
   switch (item.type) {
     case 'thought':
       return <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />;
+    case 'todo':
+      return <CheckSquare2 className="w-3.5 h-3.5 text-cyan-400 shrink-0" />;
     case 'analyze':
       return <Atom className="w-3.5 h-3.5 text-blue-400 shrink-0" />;
     case 'edit':
@@ -49,14 +55,25 @@ function getActivityIcon(item: ActivityItem) {
 
 export const AgentWorkTimeline: React.FC<AgentWorkTimelineProps> = ({
   turn,
+  activities,
+  isStreaming,
+  durationLabel,
   defaultExpanded = true,
   onSelectDiffFile,
 }) => {
-  const { agentRun } = turn;
-  const [isRunExpanded, setIsRunExpanded] = useState(defaultExpanded || agentRun.isStreaming);
+  const effectiveActivities = activities || turn?.agentRun.activities || [];
+  const effectiveIsStreaming = isStreaming ?? turn?.agentRun.isStreaming ?? false;
+  const hasActiveWork = effectiveActivities.length > 0;
+  const computedDurSec = effectiveActivities.reduce((acc, a) => acc + (a.durationSeconds || 1.5), 0);
+  const effectiveDurationLabel =
+    durationLabel ||
+    turn?.agentRun.durationLabel ||
+    (hasActiveWork ? `Worked for ${formatDuration(computedDurSec)}` : 'Working...');
+
+  const [isRunExpanded, setIsRunExpanded] = useState(defaultExpanded || effectiveIsStreaming);
   const [expandedItemIds, setExpandedItemIds] = useState<Set<string>>(new Set());
 
-  if (!agentRun.hasActiveWork && !agentRun.isStreaming) {
+  if (!hasActiveWork && !effectiveIsStreaming) {
     return null;
   }
 
@@ -79,14 +96,14 @@ export const AgentWorkTimeline: React.FC<AgentWorkTimelineProps> = ({
         onClick={() => setIsRunExpanded((prev) => !prev)}
         className="inline-flex items-center gap-1.5 py-1 px-1 text-xs font-mono text-slate-300 hover:text-white cursor-pointer transition-colors group"
       >
-        {agentRun.isStreaming ? (
+        {effectiveIsStreaming ? (
           <span className="w-2 h-2 rounded-full bg-indigo-500 animate-ping mr-0.5 shrink-0" />
         ) : (
           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400/80 shrink-0" />
         )}
 
         <span className="font-semibold text-slate-200 group-hover:text-white tracking-tight">
-          {agentRun.durationLabel}
+          {effectiveDurationLabel}
         </span>
 
         {isRunExpanded ? (
@@ -99,7 +116,7 @@ export const AgentWorkTimeline: React.FC<AgentWorkTimelineProps> = ({
       {/* Level 2: Chronological Activities List */}
       {isRunExpanded && (
         <div className="mt-1.5 ml-1.5 pl-3 border-l border-slate-800/80 space-y-1">
-          {agentRun.activities.map((item) => {
+          {effectiveActivities.map((item) => {
             const isItemExpanded = expandedItemIds.has(item.id);
             const hasDetails = Boolean(item.content || item.output || item.command);
 

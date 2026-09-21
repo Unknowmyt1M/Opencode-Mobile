@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
   Send,
   Square,
@@ -9,6 +9,8 @@ import {
   XCircle,
   Cpu,
   X,
+  Pencil,
+  ArrowUp,
 } from 'lucide-react';
 import type { ModelInfo, PermissionItem } from '@opencode-remote/protocol';
 
@@ -22,6 +24,9 @@ interface ComposerProps {
   permissions?: PermissionItem[];
   onReplyPermission?: (id: string, reply: 'allow' | 'deny') => void;
   placeholder?: string;
+  editingItem?: { id: string; content: string } | null;
+  onSaveEdit?: (id: string, newContent: string) => void;
+  onCancelEdit?: () => void;
 }
 
 export const Composer: React.FC<ComposerProps> = ({
@@ -34,6 +39,9 @@ export const Composer: React.FC<ComposerProps> = ({
   permissions = [],
   onReplyPermission,
   placeholder = 'Ask OpenCode to code, inspect, or command an action...',
+  editingItem,
+  onSaveEdit,
+  onCancelEdit,
 }) => {
   const [input, setInput] = useState('');
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -52,7 +60,25 @@ export const Composer: React.FC<ComposerProps> = ({
     return groups;
   }, [models]);
 
+  // Synchronize input when entering or exiting edit mode
+  useEffect(() => {
+    if (editingItem) {
+      setInput(editingItem.content);
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        textareaRef.current.style.height = 'auto';
+        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 180)}px`;
+      }
+    }
+  }, [editingItem]);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Escape' && editingItem) {
+      e.preventDefault();
+      onCancelEdit?.();
+      setInput('');
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
@@ -60,8 +86,19 @@ export const Composer: React.FC<ComposerProps> = ({
   };
 
   const handleSubmit = () => {
-    if (!input.trim() || isStreaming) return;
-    onSendMessage(input.trim());
+    const clean = input.trim();
+    if (!clean) return;
+
+    if (editingItem) {
+      onSaveEdit?.(editingItem.id, clean);
+      setInput('');
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
+      return;
+    }
+
+    onSendMessage(clean);
     setInput('');
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
@@ -76,6 +113,27 @@ export const Composer: React.FC<ComposerProps> = ({
 
   return (
     <div className="flex flex-col bg-slate-900/95 border-t border-slate-800/90 backdrop-blur-md shrink-0 relative z-30 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+      {/* Editing Queued Message Banner */}
+      {editingItem && (
+        <div className="px-3.5 py-1.5 bg-indigo-950/70 border-b border-indigo-800/50 flex items-center justify-between text-xs animate-in fade-in duration-150">
+          <div className="flex items-center gap-2 text-indigo-300 font-medium">
+            <Pencil className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Editing Queued Message</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setInput('');
+              onCancelEdit?.();
+            }}
+            className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors cursor-pointer"
+          >
+            <X className="w-3 h-3" />
+            <span>Cancel</span>
+          </button>
+        </div>
+      )}
+
       {/* Prominent Human-In-The-Loop Permission Banner */}
       {permissions.length > 0 && onReplyPermission && (
         <div className="px-3.5 py-2.5 bg-amber-950/40 border-b border-amber-800/60 flex flex-col gap-2 animate-in fade-in slide-in-from-top-2 duration-200">
@@ -214,7 +272,7 @@ export const Composer: React.FC<ComposerProps> = ({
             rows={1}
             className="w-full min-h-[44px] max-h-44 resize-none rounded-xl bg-slate-950/90 border border-slate-800/90 pl-3.5 pr-8 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 transition-all font-sans leading-relaxed"
           />
-          {input.length > 0 && !isStreaming && (
+          {input.length > 0 && (
             <button
               type="button"
               onClick={() => {
@@ -232,15 +290,37 @@ export const Composer: React.FC<ComposerProps> = ({
           )}
         </div>
 
-        {isStreaming ? (
+        {editingItem ? (
           <button
             type="button"
-            onClick={onAbort}
-            title="Stop generation"
-            className="w-11 h-11 rounded-xl bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30 transition-all shrink-0 cursor-pointer flex items-center justify-center animate-pulse"
+            onClick={handleSubmit}
+            disabled={!input.trim()}
+            title="Save changes"
+            className="w-11 h-11 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white shadow-lg shadow-emerald-600/25 transition-all shrink-0 cursor-pointer flex items-center justify-center active:scale-95"
           >
-            <Square className="w-4 h-4 fill-current" />
+            <Check className="w-4 h-4" />
           </button>
+        ) : isStreaming ? (
+          <div className="flex items-center gap-1.5 shrink-0">
+            {input.trim().length > 0 && (
+              <button
+                type="button"
+                onClick={handleSubmit}
+                title="Queue message (sends after agent finishes work)"
+                className="w-11 h-11 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/25 transition-all shrink-0 cursor-pointer flex items-center justify-center active:scale-95 animate-in fade-in duration-150"
+              >
+                <ArrowUp className="w-4 h-4" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onAbort}
+              title="Stop generation"
+              className="w-11 h-11 rounded-xl bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30 transition-all shrink-0 cursor-pointer flex items-center justify-center animate-pulse"
+            >
+              <Square className="w-4 h-4 fill-current" />
+            </button>
+          </div>
         ) : (
           <button
             type="button"

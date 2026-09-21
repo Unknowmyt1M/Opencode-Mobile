@@ -6,6 +6,8 @@ import {
   type ConnectionState,
   type ProtocolMessage,
   type OpenCodeStatus,
+  type TodoItem,
+  type SnapshotFileDiff,
 } from '@opencode-remote/protocol';
 import type { AgentConfig } from './config.js';
 import { OpenCodeDetector } from './opencode.js';
@@ -103,6 +105,18 @@ export class RemoteAgent {
 
   private sessionTurns: Map<string, { messageId: string; startedEmitted: boolean; completedEmitted: boolean }> = new Map();
 
+  private getOrCreateTurn(sessionId: string, preferredMessageId?: string) {
+    let turn = this.sessionTurns.get(sessionId);
+    if (!turn) {
+      const messageId = preferredMessageId || `msg_${sessionId}_${Date.now()}`;
+      turn = { messageId, startedEmitted: false, completedEmitted: false };
+      this.sessionTurns.set(sessionId, turn);
+    } else if (preferredMessageId && turn.messageId !== preferredMessageId) {
+      turn.messageId = preferredMessageId;
+    }
+    return turn;
+  }
+
   private handleOpenCodeEvent(evt: any) {
     if (!evt || !evt.type) return;
 
@@ -122,17 +136,8 @@ export class RemoteAgent {
       return;
     }
 
-    let turn = this.sessionTurns.get(sessionId);
     const incomingMessageId = props.assistantMessageID || props.messageID;
-
-    if (!turn) {
-      const messageId = incomingMessageId || `msg_${sessionId}_${Date.now()}`;
-      turn = { messageId, startedEmitted: false, completedEmitted: false };
-      this.sessionTurns.set(sessionId, turn);
-    } else if (incomingMessageId && turn.messageId !== incomingMessageId) {
-      // OpenCode provided official assistant message ID
-      turn.messageId = incomingMessageId;
-    }
+    const turn = this.getOrCreateTurn(sessionId, incomingMessageId);
 
     const currentMessageId = turn.messageId;
 
@@ -174,7 +179,9 @@ export class RemoteAgent {
     } else if (
       eventType === 'session.next.text.started' ||
       eventType === 'session.next.step.started' ||
-      eventType === 'session.step.started'
+      eventType === 'session.step.started' ||
+      eventType === 'session.next.reasoning.started' ||
+      eventType === 'session.next.tool.started'
     ) {
       ensureStarted();
     } else if (
@@ -183,10 +190,9 @@ export class RemoteAgent {
       eventType === 'session.next.step.ended' ||
       (eventType === 'session.status' && props.status?.type === 'idle')
     ) {
-      // Complete turn if not already completed
-      if (!turn.completedEmitted) {
+      // Complete turn ONLY if turn was actively started by a prompt
+      if (turn.startedEmitted && !turn.completedEmitted) {
         turn.completedEmitted = true;
-        ensureStarted(); // In case response was instant/empty
         const msg = createMessage('MESSAGE_COMPLETED', {
           deviceId: this.config.deviceId,
           sessionId,
@@ -201,8 +207,34 @@ export class RemoteAgent {
           if (this.sessionTurns.get(sessionId) === turn) {
             this.sessionTurns.delete(sessionId);
           }
-        }, 2000);
+        }, 1500);
       }
+    } else if (eventType === 'todo.updated' && Array.isArray(props.todos)) {
+      const todoItems: TodoItem[] = props.todos.map((t: any) => ({
+        content: t.content || '',
+        status: t.status || 'pending',
+        priority: t.priority || 'medium',
+      }));
+      const msg = createMessage('TODO_UPDATED', {
+        deviceId: this.config.deviceId,
+        sessionId,
+        todos: todoItems,
+      });
+      this.sendMessage(msg);
+    } else if (eventType === 'session.diff' && Array.isArray(props.diff)) {
+      const diffs: SnapshotFileDiff[] = props.diff.map((d: any) => ({
+        file: (d.file || d.path || '').replace(/\\/g, '/'),
+        patch: d.patch,
+        additions: typeof d.additions === 'number' ? d.additions : 0,
+        deletions: typeof d.deletions === 'number' ? d.deletions : 0,
+        status: d.status,
+      }));
+      const msg = createMessage('SESSION_DIFF_UPDATED', {
+        deviceId: this.config.deviceId,
+        sessionId,
+        diff: diffs,
+      });
+      this.sendMessage(msg);
     } else if (eventType === 'session.error') {
       const errorText =
         props.error?.data?.message ||
@@ -528,8 +560,20 @@ export class RemoteAgent {
 
         case 'MESSAGE_SEND': {
           try {
-            const { sessionId, content } = msg.payload;
-            const messageId = await this.adapter.sendMessage(sessionId, content);
+            const { sessionId, content, model } = msg.payload;
+            const messageId = await this.adapter.sendMessage(sessionId, content, model);
+
+            // Mark turn active
+            const turn = this.getOrCreateTurn(sessionId, messageId);
+            turn.startedEmitted = true;
+            this.sendMessage(
+              createMessage('MESSAGE_STARTED', {
+                deviceId: this.config.deviceId,
+                sessionId,
+                messageId,
+                timestamp: Date.now(),
+              })
+            );
 
             // Fast ACK
             const ack = createMessage(
@@ -549,6 +593,31 @@ export class RemoteAgent {
                 deviceId: this.config.deviceId,
                 sessionId: msg.payload.sessionId,
                 error: err.message,
+              })
+            );
+          }
+          break;
+        }
+
+        case 'TODO_LIST_REQUEST': {
+          try {
+            const todos = await this.adapter.getTodos(msg.payload.sessionId);
+            const res = createMessage(
+              'TODO_LIST_RESULT',
+              {
+                deviceId: this.config.deviceId,
+                sessionId: msg.payload.sessionId,
+                todos,
+              },
+              msg.id
+            );
+            this.sendMessage(res);
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage('ERROR', {
+                code: 'TODO_LIST_FAILED',
+                message: err.message || 'Failed to fetch todos',
+                requestId: msg.id,
               })
             );
           }

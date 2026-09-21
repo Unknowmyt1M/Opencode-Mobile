@@ -8,6 +8,7 @@ import type {
   PtySession,
   ModelInfo,
   PermissionItem,
+  TodoItem,
 } from '@opencode-remote/protocol';
 
 export interface OpenCodeAdapterOptions {
@@ -313,7 +314,11 @@ export class OpenCodeAdapter {
     }
   }
 
-  async sendMessage(sessionId: string, content: string): Promise<string> {
+  async sendMessage(
+    sessionId: string,
+    content: string,
+    model?: { providerID: string; modelID: string }
+  ): Promise<string> {
     const clientMessageId = `msg_${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
     const payload: Record<string, any> = {
       messageID: clientMessageId,
@@ -324,7 +329,9 @@ export class OpenCodeAdapter {
         },
       ],
     };
-    if (this.defaultModel) {
+    if (model && model.providerID && model.modelID) {
+      payload.model = model;
+    } else if (this.defaultModel) {
       payload.model = this.defaultModel;
     }
 
@@ -518,10 +525,37 @@ export class OpenCodeAdapter {
     }
     const data = (await res.json()) as any;
     const allProviders: any[] = data.all || data.providers || [];
-    const defaultModel = data.default ? { providerID: data.default.providerID, modelID: data.default.modelID } : this.defaultModel;
+    const connectedList: string[] = Array.isArray(data.connected) ? data.connected : [];
+    const targetProviders =
+      connectedList.length > 0
+        ? allProviders.filter((p: any) => connectedList.includes(p.id))
+        : allProviders;
+
+    let defaultModel: { providerID: string; modelID: string } | undefined = undefined;
+    if (data.default && typeof data.default === 'object') {
+      if (typeof data.default.providerID === 'string' && typeof data.default.modelID === 'string') {
+        defaultModel = { providerID: data.default.providerID, modelID: data.default.modelID };
+      } else {
+        const firstConnected = connectedList.find((c: string) => data.default[c]);
+        if (firstConnected) {
+          defaultModel = { providerID: firstConnected, modelID: data.default[firstConnected] };
+        } else {
+          const firstKey = Object.keys(data.default)[0];
+          if (firstKey && typeof data.default[firstKey] === 'string') {
+            defaultModel = { providerID: firstKey, modelID: data.default[firstKey] };
+          }
+        }
+      }
+    }
+    if (!defaultModel && this.defaultModel) {
+      defaultModel = this.defaultModel;
+    }
+    if (defaultModel) {
+      this.defaultModel = defaultModel;
+    }
 
     const models: ModelInfo[] = [];
-    for (const p of allProviders) {
+    for (const p of targetProviders) {
       const pModels: any[] = p.models ? Object.values(p.models) : [];
       for (const m of pModels) {
         models.push({
@@ -537,6 +571,28 @@ export class OpenCodeAdapter {
       models,
       defaultModel,
     };
+  }
+
+  // ==========================================
+  // Todos
+  // ==========================================
+  async getTodos(sessionId: string): Promise<TodoItem[]> {
+    try {
+      const res = await fetch(`${this.baseUrl}/session/${encodeURIComponent(sessionId)}/todo`, {
+        headers: this.getHeaders(),
+      });
+      if (!res.ok) {
+        return [];
+      }
+      const data = (await res.json()) as any[];
+      return (data || []).map((t: any) => ({
+        content: t.content || '',
+        status: t.status || 'pending',
+        priority: t.priority || 'medium',
+      }));
+    } catch {
+      return [];
+    }
   }
 
   // ==========================================

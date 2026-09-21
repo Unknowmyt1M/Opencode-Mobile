@@ -85,6 +85,17 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
   onRefresh,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await Promise.resolve(onRefresh());
+    } finally {
+      setTimeout(() => setIsRefreshing(false), 600);
+    }
+  };
   const [wrapText, setWrapText] = useState<boolean>(() => {
     try {
       return localStorage.getItem('opencode_diff_wrap') === 'true';
@@ -192,11 +203,14 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
             </button>
             <button
               type="button"
-              onClick={onRefresh}
+              onClick={handleRefresh}
+              disabled={isRefreshing}
               title="Refresh changes"
-              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
+              className={`p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all cursor-pointer ${
+                isRefreshing ? 'opacity-70 cursor-not-allowed' : ''
+              }`}
             >
-              <RefreshCw className="w-3.5 h-3.5" />
+              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-indigo-400' : ''}`} />
             </button>
           </div>
         </div>

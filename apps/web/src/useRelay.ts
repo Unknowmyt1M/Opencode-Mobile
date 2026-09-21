@@ -19,7 +19,10 @@ import {
   type ModelListResultPayload,
   type PermissionListResultPayload,
   type PermissionReplyResultPayload,
+  type TodoItem,
+  type TodoListResultPayload,
 } from '@opencode-remote/protocol';
+import { useMessageQueue } from './hooks/useMessageQueue';
 
 export type WorkspaceTab = 'chat' | 'review' | 'terminal' | 'activity' | 'files' | 'diff';
 
@@ -46,6 +49,8 @@ export function useRelay(relayWsUrl?: string) {
   const [selectedModel, setSelectedModel] = useState<{ providerID: string; modelID: string } | null>(null);
 
   const [permissions, setPermissions] = useState<PermissionItem[]>([]);
+  const [todos, setTodos] = useState<TodoItem[]>([]);
+  const fetchTodosRef = useRef<((deviceId: string, sessionId: string) => void) | null>(null);
 
   const [streamingText, setStreamingText] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
@@ -326,15 +331,63 @@ export function useRelay(relayWsUrl?: string) {
               break;
             }
 
+            case 'TODO_UPDATED': {
+              if (msg.payload.sessionId === activeSession?.session?.id) {
+                setTodos(msg.payload.todos || []);
+              }
+              break;
+            }
+
+            case 'SESSION_DIFF_UPDATED': {
+              if (msg.payload.sessionId === activeSession?.session?.id) {
+                setSessionDiffs(msg.payload.diff || []);
+              }
+              break;
+            }
+
             case 'MESSAGE_STARTED': {
               setIsStreaming(true);
               setStreamingText('');
+              const messageId = msg.payload.messageId;
+              const sessionId = msg.payload.sessionId;
+              setActiveSession((curr) => {
+                if (!curr || curr.session.id !== sessionId) return curr;
+                const exists = curr.messages.some((m) => m.id === messageId);
+                if (exists) return curr;
+                return {
+                  ...curr,
+                  messages: [
+                    ...curr.messages,
+                    {
+                      id: messageId,
+                      sessionId,
+                      role: 'assistant',
+                      content: '',
+                      parts: [],
+                      createdAt: msg.payload.timestamp || Date.now(),
+                    },
+                  ],
+                };
+              });
               break;
             }
 
             case 'MESSAGE_DELTA': {
               setIsStreaming(true);
-              setStreamingText((prev) => prev + msg.payload.delta);
+              const { delta, messageId, sessionId } = msg.payload;
+              setStreamingText((prev) => prev + delta);
+              setActiveSession((curr) => {
+                if (!curr || curr.session.id !== sessionId) return curr;
+                const msgs = [...curr.messages];
+                const mIdx = msgs.findIndex((m) => m.id === messageId);
+                if (mIdx >= 0) {
+                  const targetMsg = msgs[mIdx];
+                  const newContent = (targetMsg.content || '') + delta;
+                  msgs[mIdx] = { ...targetMsg, content: newContent };
+                  return { ...curr, messages: msgs };
+                }
+                return curr;
+              });
               break;
             }
 
@@ -343,22 +396,22 @@ export function useRelay(relayWsUrl?: string) {
               const totalText = msg.payload.totalText;
               setStreamingText((final) => {
                 const completedText = totalText || final;
-                if (completedText) {
-                  setActiveSession((curr) => {
-                    if (!curr) return null;
-                    const existingIdx = curr.messages.findIndex((m) => m.id === msg.payload.messageId);
-                    if (existingIdx >= 0) {
-                      const updatedMsgs = [...curr.messages];
-                      updatedMsgs[existingIdx] = {
-                        ...updatedMsgs[existingIdx],
-                        content: completedText,
-                      };
-                      return { ...curr, messages: updatedMsgs };
-                    }
+                setActiveSession((curr) => {
+                  if (!curr) return null;
+                  const msgs = [...curr.messages];
+                  const existingIdx = msgs.findIndex((m) => m.id === msg.payload.messageId);
+                  if (existingIdx >= 0) {
+                    msgs[existingIdx] = {
+                      ...msgs[existingIdx],
+                      content: completedText || msgs[existingIdx].content,
+                    };
+                    return { ...curr, messages: msgs };
+                  }
+                  if (completedText) {
                     return {
                       ...curr,
                       messages: [
-                        ...curr.messages,
+                        ...msgs,
                         {
                           id: msg.payload.messageId,
                           sessionId: msg.payload.sessionId,
@@ -368,13 +421,15 @@ export function useRelay(relayWsUrl?: string) {
                         },
                       ],
                     };
-                  });
-                }
+                  }
+                  return curr;
+                });
                 return '';
               });
-              // Refresh diffs after completion of assistant turn
+              // Refresh diffs and todos after completion of assistant turn
               if (selectedDeviceRef.current && msg.payload.sessionId) {
                 fetchSessionDiffRef.current?.(selectedDeviceRef.current.deviceId, msg.payload.sessionId);
+                fetchTodosRef.current?.(selectedDeviceRef.current.deviceId, msg.payload.sessionId);
               }
               break;
             }
@@ -384,26 +439,58 @@ export function useRelay(relayWsUrl?: string) {
               const evt = msg.payload as any;
               const props = evt.payload?.properties || evt.payload?.data || {};
               const eventType = evt.payload?.type || evt.eventType;
+              const sessionId = props.sessionID || evt.payload?.sessionID;
 
-              if (eventType === 'message.part' && props.part) {
+              // If todo event arrived inside raw opencode event
+              if (eventType === 'todo.updated' && Array.isArray(props.todos)) {
+                if (sessionId === activeSession?.session?.id) {
+                  setTodos(props.todos);
+                }
+              }
+
+              // If diff event arrived inside raw opencode event
+              if (eventType === 'session.diff' && Array.isArray(props.diff)) {
+                if (sessionId === activeSession?.session?.id) {
+                  setSessionDiffs(props.diff);
+                }
+              }
+
+              // Handle message.part.updated or message.part
+              if ((eventType === 'message.part.updated' || eventType === 'message.part') && props.part) {
                 const part = props.part;
                 const messageId = props.messageID || props.assistantMessageID;
-                if (messageId) {
-                  setActiveSession((curr) => {
-                    if (!curr) return null;
-                    const msgs = [...curr.messages];
-                    const mIdx = msgs.findIndex((m) => m.id === messageId);
-                    if (mIdx >= 0) {
-                      const existingParts = msgs[mIdx].parts || [];
-                      const pIdx = existingParts.findIndex((p) => p.id === part.id || (part.callID && p.callID === part.callID));
-                      const updatedParts = pIdx >= 0
-                        ? existingParts.map((p, i) => (i === pIdx ? { ...p, ...part } : p))
-                        : [...existingParts, part];
-                      msgs[mIdx] = { ...msgs[mIdx], parts: updatedParts };
-                      return { ...curr, messages: msgs };
-                    }
-                    return curr;
-                  });
+
+                setActiveSession((curr) => {
+                  if (!curr) return null;
+                  const msgs = [...curr.messages];
+                  let mIdx = messageId ? msgs.findIndex((m) => m.id === messageId) : -1;
+                  // If messageId not found, create or update active assistant message so parts are never dropped
+                  if (mIdx < 0) {
+                    const newMsg: SessionMessage = {
+                      id: messageId || `msg_${Date.now()}`,
+                      sessionId: sessionId || curr.session.id,
+                      role: 'assistant',
+                      content: '',
+                      parts: [part],
+                      createdAt: Date.now(),
+                    };
+                    return { ...curr, messages: [...msgs, newMsg] };
+                  }
+
+                  const existingParts = msgs[mIdx].parts || [];
+                  const pIdx = existingParts.findIndex((p) => p.id === part.id || (part.callID && p.callID === part.callID));
+                  const updatedParts = pIdx >= 0
+                    ? existingParts.map((p, i) => (i === pIdx ? { ...p, ...part } : p))
+                    : [...existingParts, part];
+                  msgs[mIdx] = { ...msgs[mIdx], parts: updatedParts };
+                  return { ...curr, messages: msgs };
+                });
+              }
+
+              // Invalidate diffs if tool finished executing
+              if (eventType === 'session.next.tool.success') {
+                if (selectedDeviceRef.current && sessionId) {
+                  fetchSessionDiffRef.current?.(selectedDeviceRef.current.deviceId, sessionId);
                 }
               }
               break;
@@ -603,6 +690,32 @@ export function useRelay(relayWsUrl?: string) {
     [deviceTokens, sendRpc]
   );
 
+  const fetchTodos = useCallback(
+    async (deviceId: string, sessionId: string) => {
+      const token = deviceTokens[deviceId];
+      if (!token) return;
+      try {
+        const res = await sendRpc<TodoListResultPayload>(
+          createMessage('TODO_LIST_REQUEST', {
+            deviceId,
+            sessionId,
+            deviceToken: token,
+          })
+        );
+        if (res?.todos) {
+          setTodos(res.todos);
+        }
+      } catch (err: any) {
+        console.warn('Failed to fetch todos:', err.message);
+      }
+    },
+    [deviceTokens, sendRpc]
+  );
+
+  useEffect(() => {
+    fetchTodosRef.current = fetchTodos;
+  }, [fetchTodos]);
+
   const openSession = useCallback(
     async (deviceId: string, sessionId: string) => {
       const msg = createMessage('SESSION_GET', {
@@ -613,17 +726,23 @@ export function useRelay(relayWsUrl?: string) {
       const res = await sendRpc<{ session: OpenCodeSession; messages: SessionMessage[] }>(msg);
       if (res.session) {
         setActiveSession(res);
-        // Pre-fetch diffs and workspace context
+        // Pre-fetch diffs, workspace context, and todos
         fetchSessionDiff(deviceId, sessionId);
         fetchWorkspace(deviceId);
+        fetchTodos(deviceId, sessionId);
       }
       return res;
     },
-    [deviceTokens, sendRpc, fetchSessionDiff, fetchWorkspace]
+    [deviceTokens, sendRpc, fetchSessionDiff, fetchWorkspace, fetchTodos]
   );
 
-  const sendMessage = useCallback(
-    async (deviceId: string, sessionId: string, content: string) => {
+  const sendDirectMessage = useCallback(
+    (
+      deviceId: string,
+      sessionId: string,
+      content: string,
+      model?: { providerID: string; modelID: string }
+    ) => {
       if (!content.trim()) return;
 
       const userMsg: SessionMessage = {
@@ -641,11 +760,13 @@ export function useRelay(relayWsUrl?: string) {
         };
       });
 
+      const token = deviceTokensRef.current[deviceId] || deviceTokens[deviceId];
       const msg = createMessage('MESSAGE_SEND', {
         deviceId,
         sessionId,
         content,
-        deviceToken: deviceTokens[deviceId],
+        deviceToken: token,
+        model,
       });
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -653,6 +774,40 @@ export function useRelay(relayWsUrl?: string) {
       }
     },
     [deviceTokens]
+  );
+
+  const {
+    currentQueue: queuedMessages,
+    editingItem: editingQueueItem,
+    setEditingItem: setEditingQueueItem,
+    enqueue: enqueueMessage,
+    edit: editQueuedMessage,
+    remove: deleteQueuedMessage,
+    sendNow: sendQueuedMessageNow,
+    retry: retryQueuedMessage,
+    clear: clearQueue,
+  } = useMessageQueue({
+    activeSessionId: activeSession?.session.id,
+    selectedDeviceId: selectedDevice?.deviceId,
+    isStreaming,
+    onSendMessage: sendDirectMessage,
+  });
+
+  const sendMessage = useCallback(
+    (
+      deviceId: string,
+      sessionId: string,
+      content: string,
+      model?: { providerID: string; modelID: string }
+    ) => {
+      if (!content.trim()) return;
+      if (isStreaming) {
+        enqueueMessage(sessionId, content, model);
+        return;
+      }
+      sendDirectMessage(deviceId, sessionId, content, model);
+    },
+    [isStreaming, enqueueMessage, sendDirectMessage]
   );
 
   // ==========================================
@@ -913,11 +1068,24 @@ export function useRelay(relayWsUrl?: string) {
     permissions,
     fetchPermissions,
     replyPermission,
+    todos,
+    fetchTodos,
+    // Queue
+    queuedMessages,
+    editingQueueItem,
+    setEditingQueueItem,
+    enqueueMessage,
+    editQueuedMessage,
+    deleteQueuedMessage,
+    sendQueuedMessageNow,
+    retryQueuedMessage,
+    clearQueue,
     closeActiveSession: () => {
       setActiveSession(null);
       setSessionDiffs([]);
       setActiveDiffFile(null);
       setActiveTab('chat');
+      setEditingQueueItem(null);
     },
     refreshDevices: () => {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {

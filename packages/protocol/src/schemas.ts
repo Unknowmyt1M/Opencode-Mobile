@@ -433,6 +433,10 @@ export const MessageSendMessageSchema = z.object({
     sessionId: z.string().min(1).max(128),
     content: z.string().min(1).max(65536),
     deviceToken: z.string().max(256).optional(),
+    model: z.object({
+      providerID: z.string().min(1),
+      modelID: z.string().min(1),
+    }).optional(),
   }),
 });
 
@@ -871,6 +875,61 @@ export const ErrorMessageSchema = z.object({
   }),
 });
 
+// Phase 3 Redesign: Todo & Diff Real-Time Schemas
+export const TodoItemSchema = z.object({
+  content: z.string(),
+  status: z.enum(['pending', 'in_progress', 'completed', 'cancelled']),
+  priority: z.enum(['high', 'medium', 'low']),
+});
+
+export const TodoListRequestMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('TODO_LIST_REQUEST'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const TodoListResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('TODO_LIST_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    todos: z.array(TodoItemSchema),
+  }),
+});
+
+export const TodoUpdatedMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('TODO_UPDATED'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    todos: z.array(TodoItemSchema),
+  }),
+});
+
+export const SessionDiffUpdatedMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_DIFF_UPDATED'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    diff: z.array(SnapshotFileDiffSchema),
+  }),
+});
+
 // Full Discriminated Union
 export const MessageSchema = z.discriminatedUnion('type', [
   AgentHelloMessageSchema,
@@ -934,6 +993,11 @@ export const MessageSchema = z.discriminatedUnion('type', [
   PermissionListResultMessageSchema,
   PermissionReplyMessageSchema,
   PermissionReplyResultMessageSchema,
+  // Phase 3 Redesign: Todo & Diff
+  TodoListRequestMessageSchema,
+  TodoListResultMessageSchema,
+  TodoUpdatedMessageSchema,
+  SessionDiffUpdatedMessageSchema,
   // Infra
   PingMessageSchema,
   PongMessageSchema,
