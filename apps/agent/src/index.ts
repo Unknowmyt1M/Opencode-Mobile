@@ -16,29 +16,30 @@ console.log(`[agent] Relay URL:     ${config.relayUrl}`);
 console.log(`[agent] OpenCode URL:  ${config.opencodeUrl}`);
 
 config.onPairingOffer = async (offer) => {
-  if (process.env.AUTO_APPROVE_PAIRING === 'true' || !process.stdin.isTTY) {
-    console.log(`[agent] Auto-approving pairing for "${offer.clientName}" (Code: ${offer.code})`);
-    return true;
-  }
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  return new Promise((resolve) => {
-    rl.question(
-      `\n[SECURITY] Incoming pairing request from "${offer.clientName}" (Code: ${offer.code}).\nAuthorize this phone? (Y/n): `,
-      (answer) => {
-        rl.close();
-        const approved = answer.trim().toLowerCase() !== 'n';
-        if (approved) {
-          console.log('[agent] Device authorized!');
-        } else {
-          console.log('[agent] Pairing rejected.');
+  if (process.env.REQUIRE_MANUAL_PAIRING_APPROVAL === 'true' && process.stdin.isTTY) {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    return new Promise((resolve) => {
+      rl.question(
+        `\n[SECURITY] Incoming pairing request from "${offer.clientName}" (Code: ${offer.code}).\nAuthorize this phone? (Y/n): `,
+        (answer) => {
+          rl.close();
+          const approved = answer.trim().toLowerCase() !== 'n';
+          if (approved) {
+            console.log('[agent] Device authorized!');
+          } else {
+            console.log('[agent] Pairing rejected.');
+          }
+          resolve(approved);
         }
-        resolve(approved);
-      }
-    );
-  });
+      );
+    });
+  }
+
+  console.log(`[agent] ✓ Authorized pairing request for "${offer.clientName}" (Code: ${offer.code})`);
+  return true;
 };
 
 const agent = new RemoteAgent(config);
