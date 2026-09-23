@@ -23,6 +23,7 @@ interface DashboardProps {
   device?: DeviceInfo;
   sessions: OpenCodeSession[];
   projectContext?: ProjectContext | null;
+  loadingSessionId?: string | null;
   onOpenSession: (sessionId: string) => void;
   onCreateSession: (title?: string) => void;
   onRefreshSessions: () => void;
@@ -33,6 +34,7 @@ export function Dashboard({
   device,
   sessions,
   projectContext,
+  loadingSessionId,
   onOpenSession,
   onCreateSession,
   onRefreshSessions,
@@ -330,29 +332,51 @@ export function Dashboard({
           </div>
         ) : (
           <div className="space-y-2">
-            {filteredSessions.map((sess) => (
-              <div
-                key={sess.id}
-                onClick={() => onOpenSession(sess.id)}
-                className="p-3.5 rounded-2xl bg-zinc-900/40 hover:bg-zinc-900 border border-zinc-800/60 hover:border-zinc-700/80 transition-all cursor-pointer flex items-center justify-between group shadow-sm"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-8 h-8 rounded-xl bg-zinc-800/80 border border-zinc-700/50 flex items-center justify-center text-zinc-400 group-hover:text-indigo-400 group-hover:border-indigo-500/40 transition-colors shrink-0">
-                    <MessageSquare className="w-4 h-4" />
+            {filteredSessions.map((sess) => {
+              const isLoading = sess.id === loadingSessionId;
+              return (
+                <div
+                  key={sess.id}
+                  onClick={() => !isLoading && onOpenSession(sess.id)}
+                  className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between group shadow-sm ${
+                    isLoading
+                      ? 'bg-zinc-900/80 border-indigo-500/50 cursor-wait'
+                      : 'bg-zinc-900/40 hover:bg-zinc-900 border-zinc-800/60 hover:border-zinc-700/80 cursor-pointer'
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-8 h-8 rounded-xl bg-zinc-800/80 border border-zinc-700/50 flex items-center justify-center text-zinc-400 group-hover:text-indigo-400 group-hover:border-indigo-500/40 transition-colors shrink-0">
+                      {isLoading ? (
+                        <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />
+                      ) : (
+                        <MessageSquare className="w-4 h-4" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs font-semibold text-zinc-200 truncate group-hover:text-white transition-colors">
+                          {sess.title || 'Untitled Session'}
+                        </h4>
+                        {isLoading && (
+                          <span className="text-[10px] font-mono text-indigo-400 animate-pulse">
+                            Opening...
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-zinc-500 font-mono mt-0.5 truncate">
+                        {sess.createdAt ? new Date(sess.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recent'}
+                      </p>
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <h4 className="text-xs font-semibold text-zinc-200 truncate group-hover:text-white transition-colors">
-                      {sess.title || 'Untitled Session'}
-                    </h4>
-                    <p className="text-[10px] text-zinc-500 font-mono mt-0.5 truncate">
-                      {sess.createdAt ? new Date(sess.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recent'}
-                    </p>
-                  </div>
-                </div>
 
-                <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-zinc-300 group-hover:translate-x-0.5 transition-all shrink-0" />
-              </div>
-            ))}
+                  {isLoading ? (
+                    <Loader2 className="w-4 h-4 text-indigo-400 animate-spin shrink-0" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4 text-zinc-500 group-hover:text-zinc-300 group-hover:translate-x-0.5 transition-all shrink-0" />
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

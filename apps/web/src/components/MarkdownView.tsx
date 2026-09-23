@@ -13,7 +13,7 @@ interface CodeBlockProps {
   children: string;
 }
 
-const CodeBlock: React.FC<CodeBlockProps> = ({ language, children }) => {
+const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, children }) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -50,9 +50,9 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ language, children }) => {
       </pre>
     </div>
   );
-};
+});
 
-export const MarkdownView: React.FC<MarkdownViewProps> = ({ content, className = '' }) => {
+const MarkdownViewComponent: React.FC<MarkdownViewProps> = ({ content, className = '' }) => {
   return (
     <div className={`markdown-body text-xs text-slate-200 leading-relaxed select-text font-sans ${className}`}>
       <ReactMarkdown
@@ -161,3 +161,7 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content, className =
     </div>
   );
 };
+
+export const MarkdownView = React.memo(MarkdownViewComponent, (prevProps, nextProps) => {
+  return prevProps.content === nextProps.content && prevProps.className === nextProps.className;
+});

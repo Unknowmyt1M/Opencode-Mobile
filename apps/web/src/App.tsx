@@ -12,6 +12,7 @@ import {
   Activity,
   Sparkles,
   ChevronRight,
+  Loader2,
 } from 'lucide-react';
 import { useRelay } from './useRelay';
 import { MachineSelector } from './components/MachineSelector';
@@ -20,6 +21,7 @@ import { ConversationView } from './components/ConversationView';
 import { ReviewView } from './components/ReviewView';
 import { XtermTerminal } from './components/XtermTerminal';
 import { AgentWorkTimeline } from './components/AgentWorkTimeline';
+import { SessionLoadingSkeleton } from './components/SessionLoadingSkeleton';
 import { normalizeConversationTurns, type TurnGroup } from './utils/activityNormalizer';
 
 export default function App() {
@@ -38,6 +40,9 @@ export default function App() {
     setActiveTab,
     streamingText,
     isStreaming,
+    isWaitingForResponse,
+    isLoadingSession,
+    loadingSessionId,
     lastError,
     clearError,
     pairDevice,
@@ -151,11 +156,13 @@ export default function App() {
                 <div>
                   <h1 className="text-xs font-bold tracking-tight text-white">OpenCode Mobile</h1>
                   <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-mono">
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full ${
-                        connectionState === 'CONNECTED' ? 'bg-emerald-400' : 'bg-rose-400'
-                      }`}
-                    />
+                    {connectionState === 'CONNECTED' ? (
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    ) : connectionState === 'CONNECTING' || connectionState === 'RECONNECTING' ? (
+                      <Loader2 className="w-3 h-3 text-amber-400 animate-spin" />
+                    ) : (
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                    )}
                     <span className="capitalize">{connectionState.toLowerCase()}</span>
                   </div>
                 </div>
@@ -222,10 +229,12 @@ export default function App() {
             ) : (
               sessions.map((sess) => {
                 const isActive = activeSession?.session.id === sess.id;
+                const isItemLoading = sess.id === loadingSessionId;
                 return (
                   <button
                     key={sess.id}
                     type="button"
+                    disabled={isItemLoading}
                     onClick={() => {
                       if (selectedDevice) {
                         openSession(selectedDevice.deviceId, sess.id);
@@ -234,18 +243,28 @@ export default function App() {
                     className={`w-full text-left p-2 rounded-xl text-xs transition-all flex items-center justify-between group cursor-pointer ${
                       isActive
                         ? 'bg-indigo-600 text-white font-medium shadow-md shadow-indigo-600/20'
+                        : isItemLoading
+                        ? 'bg-indigo-950/40 text-indigo-300 border border-indigo-500/30 cursor-wait'
                         : 'text-slate-300 hover:bg-slate-900 hover:text-white'
                     }`}
                   >
                     <div className="flex items-center gap-2 min-w-0 pr-2">
-                      <MessageSquare className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                      {isItemLoading ? (
+                        <Loader2 className="w-3.5 h-3.5 shrink-0 text-indigo-400 animate-spin" />
+                      ) : (
+                        <MessageSquare className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                      )}
                       <span className="truncate">{sess.title || 'Untitled Session'}</span>
                     </div>
-                    <ChevronRight
-                      className={`w-3.5 h-3.5 shrink-0 transition-transform ${
-                        isActive ? 'text-white translate-x-0.5' : 'text-slate-600 group-hover:text-slate-400'
-                      }`}
-                    />
+                    {isItemLoading ? (
+                      <span className="text-[10px] font-mono text-indigo-400 animate-pulse">Loading...</span>
+                    ) : (
+                      <ChevronRight
+                        className={`w-3.5 h-3.5 shrink-0 transition-transform ${
+                          isActive ? 'text-white translate-x-0.5' : 'text-slate-600 group-hover:text-slate-400'
+                        }`}
+                      />
+                    )}
                   </button>
                 );
               })
@@ -270,12 +289,15 @@ export default function App() {
 
         {/* Pane 2: Center Stage (Chat / Playground & Multiline Composer) */}
         <main className="flex-1 flex flex-col bg-[#0b0f19] border-r border-slate-800/80 min-w-0 overflow-hidden relative">
-          {activeSession && selectedDevice ? (
+          {isLoadingSession ? (
+            <SessionLoadingSkeleton />
+          ) : activeSession && selectedDevice ? (
             <ConversationView
               session={activeSession.session}
               messages={activeSession.messages}
               streamingText={streamingText}
               isStreaming={isStreaming}
+              isWaitingForResponse={isWaitingForResponse}
               projectContext={projectContext}
               diffs={sessionDiffs}
               activeDiffFile={activeDiffFile}
@@ -486,12 +508,15 @@ export default function App() {
           MOBILE TOUCH-OPTIMIZED VIEW (< 1024px)
           ========================================================================= */}
       <div className="flex lg:hidden flex-1 min-h-0 overflow-hidden w-full h-full">
-        {activeSession && selectedDevice ? (
+        {isLoadingSession ? (
+          <SessionLoadingSkeleton />
+        ) : activeSession && selectedDevice ? (
           <ConversationView
             session={activeSession.session}
             messages={activeSession.messages}
             streamingText={streamingText}
             isStreaming={isStreaming}
+            isWaitingForResponse={isWaitingForResponse}
             projectContext={projectContext}
             diffs={sessionDiffs}
             activeDiffFile={activeDiffFile}
@@ -568,6 +593,8 @@ export default function App() {
                   <div className="flex items-center gap-1 text-[10px] text-zinc-400 font-mono">
                     {connectionState === 'CONNECTED' ? (
                       <Wifi className="w-3 h-3 text-emerald-400" />
+                    ) : connectionState === 'CONNECTING' || connectionState === 'RECONNECTING' ? (
+                      <Loader2 className="w-3 h-3 text-amber-400 animate-spin" />
                     ) : (
                       <WifiOff className="w-3 h-3 text-rose-400" />
                     )}
@@ -594,6 +621,7 @@ export default function App() {
                 device={selectedDevice}
                 sessions={sessions}
                 projectContext={projectContext}
+                loadingSessionId={loadingSessionId}
                 onOpenSession={(sId) => selectedDevice && openSession(selectedDevice.deviceId, sId)}
                 onCreateSession={(t) => selectedDevice && createSession(selectedDevice.deviceId, t)}
                 onRefreshSessions={() => selectedDevice && fetchSessions(selectedDevice.deviceId)}

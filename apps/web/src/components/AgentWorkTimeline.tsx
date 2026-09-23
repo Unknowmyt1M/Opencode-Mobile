@@ -53,7 +53,7 @@ function getActivityIcon(item: ActivityItem) {
   }
 }
 
-export const AgentWorkTimeline: React.FC<AgentWorkTimelineProps> = ({
+const AgentWorkTimelineComponent: React.FC<AgentWorkTimelineProps> = ({
   turn,
   activities,
   isStreaming,
@@ -282,3 +282,5 @@ export const AgentWorkTimeline: React.FC<AgentWorkTimelineProps> = ({
     </div>
   );
 };
+
+export const AgentWorkTimeline = React.memo(AgentWorkTimelineComponent);

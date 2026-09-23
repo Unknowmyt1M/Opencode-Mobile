@@ -54,7 +54,17 @@ export function useRelay(relayWsUrl?: string) {
 
   const [streamingText, setStreamingText] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
+  const [isWaitingForResponse, setIsWaitingForResponse] = useState<boolean>(false);
+  const [isLoadingSession, setIsLoadingSession] = useState<boolean>(false);
+  const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
+
+  const deltaBufferRef = useRef<{
+    deltaText: string;
+    messageId: string;
+    sessionId: string;
+    rafId: number | null;
+  }>({ deltaText: '', messageId: '', sessionId: '', rafId: null });
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptRef = useRef<number>(0);
@@ -347,7 +357,13 @@ export function useRelay(relayWsUrl?: string) {
 
             case 'MESSAGE_STARTED': {
               setIsStreaming(true);
+              setIsWaitingForResponse(false);
               setStreamingText('');
+              if (deltaBufferRef.current.rafId !== null) {
+                cancelAnimationFrame(deltaBufferRef.current.rafId);
+                deltaBufferRef.current.rafId = null;
+              }
+              deltaBufferRef.current.deltaText = '';
               const messageId = msg.payload.messageId;
               const sessionId = msg.payload.sessionId;
               setActiveSession((curr) => {
@@ -374,25 +390,46 @@ export function useRelay(relayWsUrl?: string) {
 
             case 'MESSAGE_DELTA': {
               setIsStreaming(true);
+              setIsWaitingForResponse(false);
               const { delta, messageId, sessionId } = msg.payload;
-              setStreamingText((prev) => prev + delta);
-              setActiveSession((curr) => {
-                if (!curr || curr.session.id !== sessionId) return curr;
-                const msgs = [...curr.messages];
-                const mIdx = msgs.findIndex((m) => m.id === messageId);
-                if (mIdx >= 0) {
-                  const targetMsg = msgs[mIdx];
-                  const newContent = (targetMsg.content || '') + delta;
-                  msgs[mIdx] = { ...targetMsg, content: newContent };
-                  return { ...curr, messages: msgs };
-                }
-                return curr;
-              });
+              deltaBufferRef.current.deltaText += delta;
+              deltaBufferRef.current.messageId = messageId;
+              deltaBufferRef.current.sessionId = sessionId;
+
+              if (deltaBufferRef.current.rafId === null) {
+                deltaBufferRef.current.rafId = requestAnimationFrame(() => {
+                  const { deltaText, messageId: bMsgId, sessionId: bSessId } = deltaBufferRef.current;
+                  deltaBufferRef.current.deltaText = '';
+                  deltaBufferRef.current.rafId = null;
+
+                  if (!deltaText) return;
+
+                  setStreamingText((prev) => prev + deltaText);
+                  setActiveSession((curr) => {
+                    if (!curr || curr.session.id !== bSessId) return curr;
+                    const msgs = [...curr.messages];
+                    const mIdx = msgs.findIndex((m) => m.id === bMsgId);
+                    if (mIdx >= 0) {
+                      const targetMsg = msgs[mIdx];
+                      const newContent = (targetMsg.content || '') + deltaText;
+                      msgs[mIdx] = { ...targetMsg, content: newContent };
+                      return { ...curr, messages: msgs };
+                    }
+                    return curr;
+                  });
+                });
+              }
               break;
             }
 
             case 'MESSAGE_COMPLETED': {
               setIsStreaming(false);
+              setIsWaitingForResponse(false);
+              if (deltaBufferRef.current.rafId !== null) {
+                cancelAnimationFrame(deltaBufferRef.current.rafId);
+                deltaBufferRef.current.rafId = null;
+              }
+              deltaBufferRef.current.deltaText = '';
               const totalText = msg.payload.totalText;
               setStreamingText((final) => {
                 const completedText = totalText || final;
@@ -436,8 +473,10 @@ export function useRelay(relayWsUrl?: string) {
 
             case 'OPENCODE_EVENT': {
               // Handle incoming OpenCode events for live tool parts & activities
+              setIsWaitingForResponse(false);
               const evt = msg.payload as any;
               const props = evt.payload?.properties || evt.payload?.data || {};
+
               const eventType = evt.payload?.type || evt.eventType;
               const sessionId = props.sessionID || evt.payload?.sessionID;
 
@@ -498,6 +537,12 @@ export function useRelay(relayWsUrl?: string) {
 
             case 'MESSAGE_ERROR': {
               setIsStreaming(false);
+              setIsWaitingForResponse(false);
+              if (deltaBufferRef.current.rafId !== null) {
+                cancelAnimationFrame(deltaBufferRef.current.rafId);
+                deltaBufferRef.current.rafId = null;
+              }
+              deltaBufferRef.current.deltaText = '';
               setLastError(`Message error: ${msg.payload.error}`);
               break;
             }
@@ -718,20 +763,27 @@ export function useRelay(relayWsUrl?: string) {
 
   const openSession = useCallback(
     async (deviceId: string, sessionId: string) => {
-      const msg = createMessage('SESSION_GET', {
-        deviceId,
-        sessionId,
-        deviceToken: deviceTokens[deviceId],
-      });
-      const res = await sendRpc<{ session: OpenCodeSession; messages: SessionMessage[] }>(msg);
-      if (res.session) {
-        setActiveSession(res);
-        // Pre-fetch diffs, workspace context, and todos
-        fetchSessionDiff(deviceId, sessionId);
-        fetchWorkspace(deviceId);
-        fetchTodos(deviceId, sessionId);
+      setIsLoadingSession(true);
+      setLoadingSessionId(sessionId);
+      try {
+        const msg = createMessage('SESSION_GET', {
+          deviceId,
+          sessionId,
+          deviceToken: deviceTokens[deviceId],
+        });
+        const res = await sendRpc<{ session: OpenCodeSession; messages: SessionMessage[] }>(msg);
+        if (res.session) {
+          setActiveSession(res);
+          // Pre-fetch diffs, workspace context, and todos
+          fetchSessionDiff(deviceId, sessionId);
+          fetchWorkspace(deviceId);
+          fetchTodos(deviceId, sessionId);
+        }
+        return res;
+      } finally {
+        setIsLoadingSession(false);
+        setLoadingSessionId(null);
       }
-      return res;
     },
     [deviceTokens, sendRpc, fetchSessionDiff, fetchWorkspace, fetchTodos]
   );
@@ -745,6 +797,7 @@ export function useRelay(relayWsUrl?: string) {
     ) => {
       if (!content.trim()) return;
 
+      setIsWaitingForResponse(true);
       const userMsg: SessionMessage = {
         id: `user_${Date.now()}`,
         sessionId,
@@ -934,10 +987,22 @@ export function useRelay(relayWsUrl?: string) {
           sessionId: activeSession.session.id,
         })
       );
+      if (deltaBufferRef.current.rafId !== null) {
+        cancelAnimationFrame(deltaBufferRef.current.rafId);
+        deltaBufferRef.current.rafId = null;
+      }
+      deltaBufferRef.current.deltaText = '';
       setIsStreaming(false);
+      setIsWaitingForResponse(false);
       return res.success;
     } catch {
+      if (deltaBufferRef.current.rafId !== null) {
+        cancelAnimationFrame(deltaBufferRef.current.rafId);
+        deltaBufferRef.current.rafId = null;
+      }
+      deltaBufferRef.current.deltaText = '';
       setIsStreaming(false);
+      setIsWaitingForResponse(false);
       return false;
     }
   }, [selectedDevice, activeSession, sendRpc]);
@@ -1040,6 +1105,9 @@ export function useRelay(relayWsUrl?: string) {
     setActiveTab,
     streamingText,
     isStreaming,
+    isWaitingForResponse,
+    isLoadingSession,
+    loadingSessionId,
     lastError,
     deviceTokens,
     pairDevice,

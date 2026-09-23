@@ -23,7 +23,7 @@ import { ReviewView } from './ReviewView';
 import { XtermTerminal } from './XtermTerminal';
 import { AgentWorkTimeline } from './AgentWorkTimeline';
 import { MarkdownView } from './MarkdownView';
-import { normalizeConversationTurns, type TurnElement, type ActivityItem } from '../utils/activityNormalizer';
+import { normalizeConversationTurns, type TurnElement, type ActivityItem, type TurnGroup } from '../utils/activityNormalizer';
 import { Composer } from './Composer';
 import { TodoWidget } from './TodoWidget';
 import { QueuedMessages } from './QueuedMessages';
@@ -65,11 +65,123 @@ function groupTurnElements(elements: TurnElement[]) {
   return chunks;
 }
 
+interface TurnItemProps {
+  turn: TurnGroup;
+  isLastTurn: boolean;
+  isStreaming: boolean;
+  isWaitingForResponse?: boolean;
+  onSelectDiffFile: (file: string) => void;
+  onSelectTab: (tab: WorkspaceTab) => void;
+}
+
+const TurnItem: React.FC<TurnItemProps> = React.memo(
+  ({
+    turn,
+    isLastTurn,
+    isStreaming,
+    isWaitingForResponse,
+    onSelectDiffFile,
+    onSelectTab,
+  }) => {
+    const cleanUserPrompt = turn.userMessage
+      ? turn.userMessage.content
+          .replace(/<supermemory-recall>[\s\S]*?<\/supermemory-recall>/gi, '')
+          .trim()
+      : null;
+
+    const isThinking =
+      isLastTurn &&
+      ((isWaitingForResponse && !turn.finalResponse && !turn.agentRun.hasActiveWork) ||
+        (isStreaming && !turn.agentRun.hasActiveWork && !turn.finalResponse));
+
+    return (
+      <div className="w-full space-y-2 py-0.5">
+        {/* User message inside bubble */}
+        {turn.userMessage && cleanUserPrompt && (
+          <div className="flex flex-col items-end w-full pb-1">
+            <div className="max-w-[88%] sm:max-w-[80%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-md shadow-indigo-600/20 bg-indigo-600 text-white whitespace-pre-wrap select-text">
+              {cleanUserPrompt}
+            </div>
+          </div>
+        )}
+
+        {/* Interleaved Chronological Elements (Thought ➔ Tool ➔ Text ➔ Thought ➔ Tool ➔ Text) */}
+        {turn.elements && turn.elements.length > 0 ? (
+          groupTurnElements(turn.elements).map((chunk) => {
+            if (chunk.type === 'activities') {
+              return (
+                <div key={chunk.key} className="w-full max-w-3xl">
+                  <AgentWorkTimeline
+                    activities={chunk.activities}
+                    isStreaming={isLastTurn && turn.agentRun.isStreaming}
+                    defaultExpanded={isLastTurn || turn.agentRun.isStreaming}
+                    onSelectDiffFile={(file) => {
+                      onSelectDiffFile(file);
+                      onSelectTab('review');
+                    }}
+                  />
+                </div>
+              );
+            }
+            if (chunk.type === 'text') {
+              return (
+                <div key={chunk.key} className="px-1 py-1 w-full max-w-3xl">
+                  <MarkdownView content={chunk.content} />
+                </div>
+              );
+            }
+            return null;
+          })
+        ) : (
+          <>
+            {/* Fallback for legacy turns without elements */}
+            {turn.agentRun.hasActiveWork && (
+              <div className="w-full max-w-3xl">
+                <AgentWorkTimeline
+                  turn={turn}
+                  defaultExpanded={isLastTurn || turn.agentRun.isStreaming}
+                  onSelectDiffFile={(file) => {
+                    onSelectDiffFile(file);
+                    onSelectTab('review');
+                  }}
+                />
+              </div>
+            )}
+            {turn.finalResponse && (
+              <div className="px-1 py-1 w-full max-w-3xl">
+                <MarkdownView content={turn.finalResponse} />
+              </div>
+            )}
+          </>
+        )}
+
+        {isStreaming && isLastTurn && turn.finalResponse && (
+          <span className="inline-block w-1.5 h-3.5 ml-1 bg-indigo-400 animate-pulse align-middle" />
+        )}
+
+        {/* Thinking / Drafting Status Card */}
+        {isThinking && (
+          <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-indigo-950/30 border border-indigo-500/20 text-indigo-300 text-xs font-mono shadow-sm animate-pulse max-w-xs mt-1">
+            <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-spin shrink-0" />
+            <span className="font-medium text-slate-200">OpenCode is thinking...</span>
+            <span className="flex gap-1 ml-auto shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+            </span>
+          </div>
+        )}
+      </div>
+    );
+  }
+);
+
 interface ConversationViewProps {
   session: OpenCodeSession;
   messages: SessionMessage[];
   streamingText: string;
   isStreaming: boolean;
+  isWaitingForResponse?: boolean;
   projectContext?: ProjectContext | null;
   diffs: SnapshotFileDiff[];
   activeDiffFile?: string | null;
@@ -116,6 +228,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   messages,
   streamingText,
   isStreaming,
+  isWaitingForResponse = false,
   projectContext,
   diffs,
   activeDiffFile,
@@ -162,9 +275,14 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
 
   useEffect(() => {
     if (activeTab === 'chat' && !showScrollBottom) {
-      bottomAnchorRef.current?.scrollIntoView({ behavior: 'smooth' });
+      if (isStreaming && chatScrollRef.current) {
+        // Fast instant scroll during streaming - eliminates 60fps layout thrashing & animation backlog
+        chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+      } else {
+        bottomAnchorRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }
     }
-  }, [messages, streamingText, activeTab, showScrollBottom]);
+  }, [messages, streamingText, activeTab, showScrollBottom, isStreaming, isWaitingForResponse]);
 
   const handleScroll = () => {
     if (!chatScrollRef.current) return;
@@ -313,88 +431,32 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
               </div>
             )}
 
-            {conversationTurns.map((turn, turnIdx) => {
-              const cleanUserPrompt = turn.userMessage
-                ? turn.userMessage.content
-                    .replace(/<supermemory-recall>[\s\S]*?<\/supermemory-recall>/gi, '')
-                    .trim()
-                : null;
-              const isLastTurn = turnIdx === conversationTurns.length - 1;
+            {conversationTurns.map((turn, turnIdx) => (
+              <TurnItem
+                key={turn.id}
+                turn={turn}
+                isLastTurn={turnIdx === conversationTurns.length - 1}
+                isStreaming={isStreaming}
+                isWaitingForResponse={isWaitingForResponse}
+                onSelectDiffFile={onSelectDiffFile}
+                onSelectTab={onSelectTab}
+              />
+            ))}
 
-              return (
-                <div key={turn.id} className="w-full space-y-2 py-0.5">
-                  {/* User message inside bubble */}
-                  {turn.userMessage && cleanUserPrompt && (
-                    <div className="flex flex-col items-end w-full pb-1">
-                      <div className="max-w-[88%] sm:max-w-[80%] rounded-2xl px-4 py-2.5 text-xs leading-relaxed shadow-md shadow-indigo-600/20 bg-indigo-600 text-white whitespace-pre-wrap select-text">
-                        {cleanUserPrompt}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Interleaved Chronological Elements (Thought ➔ Tool ➔ Text ➔ Thought ➔ Tool ➔ Text) */}
-                  {turn.elements && turn.elements.length > 0 ? (
-                    groupTurnElements(turn.elements).map((chunk) => {
-                      if (chunk.type === 'activities') {
-                        return (
-                          <div key={chunk.key} className="w-full max-w-3xl">
-                            <AgentWorkTimeline
-                              activities={chunk.activities}
-                              isStreaming={isLastTurn && turn.agentRun.isStreaming}
-                              defaultExpanded={isLastTurn || turn.agentRun.isStreaming}
-                              onSelectDiffFile={(file) => {
-                                onSelectDiffFile(file);
-                                onSelectTab('review');
-                              }}
-                            />
-                          </div>
-                        );
-                      }
-                      if (chunk.type === 'text') {
-                        return (
-                          <div key={chunk.key} className="px-1 py-1 w-full max-w-3xl">
-                            <MarkdownView content={chunk.content} />
-                          </div>
-                        );
-                      }
-                      return null;
-                    })
-                  ) : (
-                    <>
-                      {/* Fallback for legacy turns without elements */}
-                      {turn.agentRun.hasActiveWork && (
-                        <div className="w-full max-w-3xl">
-                          <AgentWorkTimeline
-                            turn={turn}
-                            defaultExpanded={isLastTurn || turn.agentRun.isStreaming}
-                            onSelectDiffFile={(file) => {
-                              onSelectDiffFile(file);
-                              onSelectTab('review');
-                            }}
-                          />
-                        </div>
-                      )}
-                      {turn.finalResponse && (
-                        <div className="px-1 py-1 w-full max-w-3xl">
-                          <MarkdownView content={turn.finalResponse} />
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  {isStreaming && isLastTurn && turn.finalResponse && (
-                    <span className="inline-block w-1.5 h-3.5 ml-1 bg-indigo-400 animate-pulse align-middle" />
-                  )}
-
-                  {isStreaming && isLastTurn && !turn.agentRun.hasActiveWork && !turn.finalResponse && (
-                    <div className="flex items-center gap-1 text-[10px] text-amber-400 font-mono px-1 py-1">
-                      <Sparkles className="w-3 h-3 animate-spin" />
-                      <span>OpenCode reasoning & drafting...</span>
-                    </div>
-                  )}
+            {/* Immediate Thinking Feedback if user prompt has been sent and waiting for agent */}
+            {isWaitingForResponse &&
+              (!conversationTurns.length ||
+                Boolean(conversationTurns[conversationTurns.length - 1].finalResponse)) && (
+                <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-indigo-950/30 border border-indigo-500/20 text-indigo-300 text-xs font-mono shadow-sm animate-pulse max-w-xs mt-1">
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-spin shrink-0" />
+                  <span className="font-medium text-slate-200">OpenCode is thinking...</span>
+                  <span className="flex gap-1 ml-auto shrink-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </span>
                 </div>
-              );
-            })}
+              )}
 
             <div ref={bottomAnchorRef} />
           </div>
