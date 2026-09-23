@@ -63,6 +63,18 @@ export const SessionMessageSchema = z.object({
   parts: z.array(MessagePartSchema).optional(),
   isCompaction: z.boolean().optional(),
   summary: z.union([z.boolean(), z.record(z.unknown())]).optional(),
+  tokens: z.object({
+    input: z.number(),
+    output: z.number(),
+    reasoning: z.number().optional(),
+    cache: z.object({
+      read: z.number().optional(),
+      write: z.number().optional(),
+    }).optional(),
+  }).optional(),
+  cost: z.number().optional(),
+  providerID: z.string().optional(),
+  modelID: z.string().optional(),
 });
 
 export const SnapshotFileDiffSchema = z.object({
@@ -96,6 +108,7 @@ export const AgentHelloMessageSchema = z.object({
     capabilities: DeviceCapabilitiesSchema.optional(),
     agentCredential: z.string().max(256).optional(),
     deviceToken: z.string().max(256).optional(),
+    requestPairingCode: z.boolean().optional(),
   }),
 });
 
@@ -421,6 +434,57 @@ export const SessionSubscribeResultMessageSchema = z.object({
     success: z.boolean(),
     deviceId: z.string().min(1).max(128),
     sessionId: z.string().min(1).max(128),
+  }),
+});
+
+// Phase 1 Modernization: Session Fork & Revert
+export const SessionForkMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_FORK'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    messageId: z.string().max(128).optional(),
+    deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const SessionForkResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_FORK_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    session: OpenCodeSessionSchema,
+  }),
+});
+
+export const SessionRevertMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_REVERT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    messageId: z.string().max(128).optional(),
+    deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const SessionRevertResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_REVERT_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    success: z.boolean(),
+    revertedPrompt: z.string().optional(),
   }),
 });
 
@@ -755,6 +819,7 @@ export const ModelInfoSchema = z.object({
   name: z.string(),
   providerId: z.string(),
   providerName: z.string().optional(),
+  contextLimit: z.number().optional(),
 });
 
 export const ModelListMessageSchema = z.object({
@@ -839,6 +904,34 @@ export const PermissionReplyResultMessageSchema = z.object({
   timestamp: z.number().int().positive(),
   payload: z.object({
     deviceId: z.string().min(1).max(128),
+    requestId: z.string().min(1).max(128),
+    success: z.boolean(),
+  }),
+});
+
+// Phase 1 Modernization: Interactive Questions
+export const QuestionReplyMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('QUESTION_REPLY'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    requestId: z.string().min(1).max(128),
+    answers: z.array(z.array(z.string())),
+    deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const QuestionReplyResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('QUESTION_REPLY_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
     requestId: z.string().min(1).max(128),
     success: z.boolean(),
   }),
@@ -932,6 +1025,88 @@ export const SessionDiffUpdatedMessageSchema = z.object({
   }),
 });
 
+// ==========================================
+// Phase 2 & 3: File System Schemas
+// ==========================================
+export const FsEntrySchema = z.object({
+  path: z.string(),
+  type: z.enum(['file', 'directory']),
+});
+
+export const FsListMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('FS_LIST'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+    path: z.string().optional(),
+  }),
+});
+
+export const FsListResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('FS_LIST_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    path: z.string().optional(),
+    entries: z.array(FsEntrySchema),
+  }),
+});
+
+export const FsFindMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('FS_FIND'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+    query: z.string(),
+    limit: z.number().int().positive().optional(),
+  }),
+});
+
+export const FsFindResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('FS_FIND_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    query: z.string(),
+    entries: z.array(FsEntrySchema),
+  }),
+});
+
+export const FsReadMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('FS_READ'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+    path: z.string(),
+  }),
+});
+
+export const FsReadResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('FS_READ_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    path: z.string(),
+    content: z.string(),
+    mime: z.string().optional(),
+  }),
+});
+
 // Full Discriminated Union
 export const MessageSchema = z.discriminatedUnion('type', [
   AgentHelloMessageSchema,
@@ -995,11 +1170,25 @@ export const MessageSchema = z.discriminatedUnion('type', [
   PermissionListResultMessageSchema,
   PermissionReplyMessageSchema,
   PermissionReplyResultMessageSchema,
+  // Phase 1 Modernization: Fork, Revert & Questions
+  SessionForkMessageSchema,
+  SessionForkResultMessageSchema,
+  SessionRevertMessageSchema,
+  SessionRevertResultMessageSchema,
+  QuestionReplyMessageSchema,
+  QuestionReplyResultMessageSchema,
   // Phase 3 Redesign: Todo & Diff
   TodoListRequestMessageSchema,
   TodoListResultMessageSchema,
   TodoUpdatedMessageSchema,
   SessionDiffUpdatedMessageSchema,
+  // Phase 2 & 3: File System
+  FsListMessageSchema,
+  FsListResultMessageSchema,
+  FsFindMessageSchema,
+  FsFindResultMessageSchema,
+  FsReadMessageSchema,
+  FsReadResultMessageSchema,
   // Infra
   PingMessageSchema,
   PongMessageSchema,

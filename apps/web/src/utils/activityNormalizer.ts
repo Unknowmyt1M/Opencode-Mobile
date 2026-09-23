@@ -1,4 +1,4 @@
-import type { SessionMessage, SnapshotFileDiff } from '@opencode-remote/protocol';
+import type { SessionMessage, SnapshotFileDiff, MessagePart } from '@opencode-remote/protocol';
 
 export type ActivityType =
   | 'thought'
@@ -33,7 +33,8 @@ export interface ActivityItem {
 
 export type TurnElement =
   | { id: string; type: 'activity'; activity: ActivityItem }
-  | { id: string; type: 'text'; content: string };
+  | { id: string; type: 'text'; content: string }
+  | { id: string; type: 'question'; part: MessagePart };
 
 export interface TurnGroup {
   id: string;
@@ -267,6 +268,13 @@ export function normalizeConversationTurns(
       if (part.type === 'tool') {
         const toolName = (part.tool || '').toLowerCase();
         const state = (part.state || {}) as any;
+
+        // 0. Question / Clarification Tool
+        if (['question', 'ask'].includes(toolName)) {
+          turn.elements.push({ id: partId, type: 'question', part });
+          continue;
+        }
+
         const input = (state.input as any) || {};
         const meta = (state.metadata as any) || {};
         const rawPath = input.filePath || input.path || input.file || meta.filepath || part.path;

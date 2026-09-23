@@ -37,7 +37,8 @@ function saveQueuesToStorage(queues: Record<string, QueuedMessage[]>) {
 interface UseMessageQueueOptions {
   activeSessionId?: string | null;
   selectedDeviceId?: string | null;
-  isStreaming: boolean;
+  isStreaming?: boolean;
+  sessionStreamingStatus?: Record<string, boolean>;
   onSendMessage: (
     deviceId: string,
     sessionId: string,
@@ -49,15 +50,16 @@ interface UseMessageQueueOptions {
 export function useMessageQueue({
   activeSessionId,
   selectedDeviceId,
-  isStreaming,
+  isStreaming = false,
+  sessionStreamingStatus,
   onSendMessage,
 }: UseMessageQueueOptions) {
   const [queues, setQueues] = useState<Record<string, QueuedMessage[]>>(loadQueuesFromStorage);
   const [editingItem, setEditingItem] = useState<{ id: string; sessionId: string; content: string } | null>(null);
 
-  // Single-flight dispatch mutex ref to avoid duplicate sends
-  const isDispatchingRef = useRef(false);
-  const prevStreamingRef = useRef(isStreaming);
+  // Per-session dispatch mutexes to prevent concurrent duplicates per session
+  const dispatchingSessionsRef = useRef<Set<string>>(new Set());
+  const prevStreamingBySessionRef = useRef<Record<string, boolean>>({});
 
   // Persist queues on change
   useEffect(() => {
@@ -156,8 +158,8 @@ export function useMessageQueue({
       }
 
       // Agent is idle: send immediately
-      if (isDispatchingRef.current) return;
-      isDispatchingRef.current = true;
+      if (dispatchingSessionsRef.current.has(sessionId)) return;
+      dispatchingSessionsRef.current.add(sessionId);
 
       try {
         setQueues((prev) => ({
@@ -177,7 +179,7 @@ export function useMessageQueue({
           ),
         }));
       } finally {
-        isDispatchingRef.current = false;
+        dispatchingSessionsRef.current.delete(sessionId);
       }
     },
     [selectedDeviceId, isStreaming, queues, onSendMessage, remove]
@@ -210,62 +212,73 @@ export function useMessageQueue({
     setEditingItem(null);
   }, []);
 
-  // Automatic dispatch when turn completes:
-  // Watch for isStreaming transitioning from true -> false
+  // Automatic dispatch when turn completes for ANY session (foreground or background):
+  // Watch for isStreaming transitioning from true -> false per session
   useEffect(() => {
-    const wasStreaming = prevStreamingRef.current;
-    prevStreamingRef.current = isStreaming;
+    if (!selectedDeviceId) return;
 
-    // Check if turn just finished and we have queued messages
-    if (wasStreaming && !isStreaming && activeSessionId && selectedDeviceId) {
-      const sessionQueue = queues[activeSessionId] || [];
-      const nextItem = sessionQueue.find((m) => m.status === 'queued');
+    for (const [sId, sessionQueue] of Object.entries(queues)) {
+      if (!Array.isArray(sessionQueue) || sessionQueue.length === 0) continue;
 
-      if (nextItem && !isDispatchingRef.current) {
-        isDispatchingRef.current = true;
+      const wasStreaming = prevStreamingBySessionRef.current[sId] ?? false;
+      const isCurrentlyStreaming = sessionStreamingStatus
+        ? sessionStreamingStatus[sId] ?? false
+        : sId === activeSessionId
+        ? isStreaming
+        : false;
 
-        // Mark as sending
-        setQueues((prev) => ({
-          ...prev,
-          [activeSessionId]: (prev[activeSessionId] || []).map((m) =>
-            m.id === nextItem.id ? { ...m, status: 'sending' } : m
-          ),
-        }));
+      prevStreamingBySessionRef.current[sId] = isCurrentlyStreaming;
 
-        // Execute send through canonical pathway
-        Promise.resolve(
-          onSendMessage(
-            selectedDeviceId,
-            activeSessionId,
-            nextItem.content,
-            nextItem.model
+      // When session sId transitions from streaming -> idle
+      if (wasStreaming && !isCurrentlyStreaming) {
+        const nextItem = sessionQueue.find((m) => m.status === 'queued');
+
+        if (nextItem && !dispatchingSessionsRef.current.has(sId)) {
+          dispatchingSessionsRef.current.add(sId);
+
+          // Mark as sending
+          setQueues((prev) => ({
+            ...prev,
+            [sId]: (prev[sId] || []).map((m) =>
+              m.id === nextItem.id ? { ...m, status: 'sending' } : m
+            ),
+          }));
+
+          // Execute send through canonical pathway
+          Promise.resolve(
+            onSendMessage(
+              selectedDeviceId,
+              sId,
+              nextItem.content,
+              nextItem.model
+            )
           )
-        )
-          .then(() => {
-            // Successfully handed off to OpenCode; remove from queue
-            remove(activeSessionId, nextItem.id);
-          })
-          .catch((err) => {
-            console.error('Failed to dispatch queued message:', err);
-            setQueues((prev) => ({
-              ...prev,
-              [activeSessionId]: (prev[activeSessionId] || []).map((m) =>
-                m.id === nextItem.id
-                  ? {
-                      ...m,
-                      status: 'failed',
-                      error: err?.message || 'Failed to dispatch queued message',
-                    }
-                  : m
-              ),
-            }));
-          })
-          .finally(() => {
-            isDispatchingRef.current = false;
-          });
+            .then(() => {
+              // Successfully handed off to OpenCode; remove from queue
+              remove(sId, nextItem.id);
+            })
+            .catch((err) => {
+              console.error(`Failed to dispatch queued message for session ${sId}:`, err);
+              setQueues((prev) => ({
+                ...prev,
+                [sId]: (prev[sId] || []).map((m) =>
+                  m.id === nextItem.id
+                    ? {
+                        ...m,
+                        status: 'failed',
+                        error: err?.message || 'Failed to dispatch queued message',
+                      }
+                    : m
+                ),
+              }));
+            })
+            .finally(() => {
+              dispatchingSessionsRef.current.delete(sId);
+            });
+        }
       }
     }
-  }, [isStreaming, activeSessionId, selectedDeviceId, queues, onSendMessage, remove]);
+  }, [isStreaming, sessionStreamingStatus, activeSessionId, selectedDeviceId, queues, onSendMessage, remove]);
 
   return {
     queues,

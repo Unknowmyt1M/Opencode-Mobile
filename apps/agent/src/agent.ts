@@ -107,11 +107,11 @@ export class RemoteAgent {
 
   private getOrCreateTurn(sessionId: string, preferredMessageId?: string) {
     let turn = this.sessionTurns.get(sessionId);
-    if (!turn) {
+    if (!turn || turn.completedEmitted || (preferredMessageId && turn.startedEmitted && turn.messageId !== preferredMessageId)) {
       const messageId = preferredMessageId || `msg_${sessionId}_${Date.now()}`;
       turn = { messageId, startedEmitted: false, completedEmitted: false };
       this.sessionTurns.set(sessionId, turn);
-    } else if (preferredMessageId && turn.messageId !== preferredMessageId) {
+    } else if (preferredMessageId && !turn.startedEmitted && turn.messageId !== preferredMessageId) {
       turn.messageId = preferredMessageId;
     }
     return turn;
@@ -202,12 +202,10 @@ export class RemoteAgent {
         });
         this.sendMessage(msg);
 
-        // Schedule cleanup so subsequent turns get a fresh turn object
-        setTimeout(() => {
-          if (this.sessionTurns.get(sessionId) === turn) {
-            this.sessionTurns.delete(sessionId);
-          }
-        }, 1500);
+        // Immediate cleanup so subsequent turns get a fresh turn object
+        if (this.sessionTurns.get(sessionId) === turn) {
+          this.sessionTurns.delete(sessionId);
+        }
       }
     } else if (eventType === 'todo.updated' && Array.isArray(props.todos)) {
       const todoItems: TodoItem[] = props.todos.map((t: any) => ({
@@ -797,6 +795,159 @@ export class RemoteAgent {
                 requestId: msg.payload.requestId,
                 success: false,
               }, msg.id)
+            );
+          }
+          break;
+        }
+
+        case 'SESSION_FORK': {
+          try {
+            const forkedSession = await this.adapter.forkSession(msg.payload.sessionId, msg.payload.messageId);
+            this.sendMessage(
+              createMessage('SESSION_FORK_RESULT', {
+                deviceId: this.config.deviceId,
+                session: forkedSession,
+              }, msg.id)
+            );
+          } catch (err: any) {
+            console.error(`[agent] Fork session error: ${err.message}`);
+          }
+          break;
+        }
+
+        case 'SESSION_REVERT': {
+          try {
+            const { success, revertedPrompt } = await this.adapter.revertSession(msg.payload.sessionId, msg.payload.messageId);
+            this.sendMessage(
+              createMessage('SESSION_REVERT_RESULT', {
+                deviceId: this.config.deviceId,
+                sessionId: msg.payload.sessionId,
+                success,
+                revertedPrompt,
+              }, msg.id)
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage('SESSION_REVERT_RESULT', {
+                deviceId: this.config.deviceId,
+                sessionId: msg.payload.sessionId,
+                success: false,
+              }, msg.id)
+            );
+          }
+          break;
+        }
+
+        case 'QUESTION_REPLY': {
+          try {
+            const success = await this.adapter.replyQuestion(msg.payload.requestId, msg.payload.answers);
+            this.sendMessage(
+              createMessage('QUESTION_REPLY_RESULT', {
+                deviceId: this.config.deviceId,
+                sessionId: msg.payload.sessionId,
+                requestId: msg.payload.requestId,
+                success,
+              }, msg.id)
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage('QUESTION_REPLY_RESULT', {
+                deviceId: this.config.deviceId,
+                sessionId: msg.payload.sessionId,
+                requestId: msg.payload.requestId,
+                success: false,
+              }, msg.id)
+            );
+          }
+          break;
+        }
+
+        case 'FS_LIST': {
+          try {
+            const entries = await this.adapter.listFs(msg.payload.path);
+            this.sendMessage(
+              createMessage(
+                'FS_LIST_RESULT',
+                {
+                  deviceId: this.config.deviceId,
+                  path: msg.payload.path,
+                  entries,
+                },
+                msg.id
+              )
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage(
+                'FS_LIST_RESULT',
+                {
+                  deviceId: this.config.deviceId,
+                  path: msg.payload.path,
+                  entries: [],
+                },
+                msg.id
+              )
+            );
+          }
+          break;
+        }
+
+        case 'FS_FIND': {
+          try {
+            const entries = await this.adapter.findFs(msg.payload.query, msg.payload.limit);
+            this.sendMessage(
+              createMessage(
+                'FS_FIND_RESULT',
+                {
+                  deviceId: this.config.deviceId,
+                  query: msg.payload.query,
+                  entries,
+                },
+                msg.id
+              )
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage(
+                'FS_FIND_RESULT',
+                {
+                  deviceId: this.config.deviceId,
+                  query: msg.payload.query,
+                  entries: [],
+                },
+                msg.id
+              )
+            );
+          }
+          break;
+        }
+
+        case 'FS_READ': {
+          try {
+            const { content, mime } = await this.adapter.readFs(msg.payload.path);
+            this.sendMessage(
+              createMessage(
+                'FS_READ_RESULT',
+                {
+                  deviceId: this.config.deviceId,
+                  path: msg.payload.path,
+                  content,
+                  mime,
+                },
+                msg.id
+              )
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage(
+                'ERROR',
+                {
+                  code: 'FS_READ_ERROR',
+                  message: err.message,
+                  requestId: msg.id,
+                },
+                msg.id
+              )
             );
           }
           break;

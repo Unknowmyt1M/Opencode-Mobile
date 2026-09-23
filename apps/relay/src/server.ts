@@ -735,10 +735,16 @@ export function buildRelayServer(options: RelayOptions = {}): {
             case 'PTY_CREATE':
             case 'PTY_LIST':
             case 'SESSION_ABORT':
+            case 'SESSION_FORK':
+            case 'SESSION_REVERT':
+            case 'QUESTION_REPLY':
             case 'MODEL_LIST':
             case 'PERMISSION_LIST':
             case 'PERMISSION_REPLY':
-            case 'TODO_LIST_REQUEST': {
+            case 'TODO_LIST_REQUEST':
+            case 'FS_LIST':
+            case 'FS_FIND':
+            case 'FS_READ': {
               const { deviceId, deviceToken } = message.payload as { deviceId: string; deviceToken?: string };
               if (!store.verifyDeviceToken(deviceId, deviceToken)) {
                 socket.send(
@@ -815,10 +821,16 @@ export function buildRelayServer(options: RelayOptions = {}): {
             }
 
             case 'SESSION_ABORT_RESULT':
+            case 'SESSION_FORK_RESULT':
+            case 'SESSION_REVERT_RESULT':
+            case 'QUESTION_REPLY_RESULT':
             case 'MODEL_LIST_RESULT':
             case 'PERMISSION_LIST_RESULT':
             case 'PERMISSION_REPLY_RESULT':
-            case 'TODO_LIST_RESULT': {
+            case 'TODO_LIST_RESULT':
+            case 'FS_LIST_RESULT':
+            case 'FS_FIND_RESULT':
+            case 'FS_READ_RESULT': {
               const clientSocket = requestToClient.get(message.id);
               if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
                 clientSocket.send(JSON.stringify(message));

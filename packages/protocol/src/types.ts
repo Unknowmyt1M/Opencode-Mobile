@@ -69,6 +69,18 @@ export interface SessionMessage {
   parts?: MessagePart[];
   isCompaction?: boolean;
   summary?: boolean | Record<string, unknown>;
+  tokens?: {
+    input: number;
+    output: number;
+    reasoning?: number;
+    cache?: {
+      read?: number;
+      write?: number;
+    };
+  };
+  cost?: number;
+  providerID?: string;
+  modelID?: string;
 }
 
 export interface SnapshotFileDiff {
@@ -106,6 +118,7 @@ export interface AgentHelloPayload {
   capabilities?: DeviceCapabilities;
   agentCredential?: string;
   deviceToken?: string;
+  requestPairingCode?: boolean;
 }
 
 export interface AgentHelloAckPayload {
@@ -480,6 +493,51 @@ export interface ModelInfo {
   name: string;
   providerId: string;
   providerName?: string;
+  contextLimit?: number;
+}
+
+// ==========================================
+// Phase 1 Modernization: Session Revert & Fork
+// ==========================================
+export interface SessionForkPayload {
+  deviceId: string;
+  sessionId: string;
+  messageId?: string;
+  deviceToken?: string;
+}
+
+export interface SessionForkResultPayload {
+  deviceId: string;
+  session: OpenCodeSession;
+}
+
+export interface SessionRevertPayload {
+  deviceId: string;
+  sessionId: string;
+  messageId?: string;
+  deviceToken?: string;
+}
+
+export interface SessionRevertResultPayload {
+  deviceId: string;
+  sessionId: string;
+  success: boolean;
+  revertedPrompt?: string;
+}
+
+export interface QuestionReplyPayload {
+  deviceId: string;
+  sessionId: string;
+  requestId: string;
+  answers: string[][];
+  deviceToken?: string;
+}
+
+export interface QuestionReplyResultPayload {
+  deviceId: string;
+  sessionId: string;
+  requestId: string;
+  success: boolean;
 }
 
 export interface ModelListPayload {
@@ -563,6 +621,61 @@ export interface SessionDiffUpdatedPayload {
   sessionId: string;
   diff: SnapshotFileDiff[];
 }
+
+// ==========================================
+// Phase 2 & 3: File System, Context Mentions & Modes
+// ==========================================
+export interface FsEntry {
+  path: string;
+  type: 'file' | 'directory';
+}
+
+export interface FsListPayload {
+  deviceId: string;
+  deviceToken?: string;
+  path?: string;
+}
+
+export interface FsListResultPayload {
+  deviceId: string;
+  path?: string;
+  entries: FsEntry[];
+}
+
+export interface FsFindPayload {
+  deviceId: string;
+  deviceToken?: string;
+  query: string;
+  limit?: number;
+}
+
+export interface FsFindResultPayload {
+  deviceId: string;
+  query: string;
+  entries: FsEntry[];
+}
+
+export interface FsReadPayload {
+  deviceId: string;
+  deviceToken?: string;
+  path: string;
+}
+
+export interface FsReadResultPayload {
+  deviceId: string;
+  path: string;
+  content: string;
+  mime?: string;
+}
+
+export interface ContextMention {
+  path: string;
+  lineStart?: number;
+  lineEnd?: number;
+  isFolder?: boolean;
+}
+
+export type SessionInteractionMode = 'build' | 'plan';
 
 
 

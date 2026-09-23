@@ -13,6 +13,7 @@ import {
   Sparkles,
   ChevronRight,
   Loader2,
+  Folder,
 } from 'lucide-react';
 import { useRelay } from './useRelay';
 import { MachineSelector } from './components/MachineSelector';
@@ -22,6 +23,8 @@ import { ReviewView } from './components/ReviewView';
 import { XtermTerminal } from './components/XtermTerminal';
 import { AgentWorkTimeline } from './components/AgentWorkTimeline';
 import { SessionLoadingSkeleton } from './components/SessionLoadingSkeleton';
+import { SessionTelemetryModal } from './components/SessionTelemetryModal';
+import { FileTreeExplorer } from './components/FileTreeExplorer';
 import { normalizeConversationTurns, type TurnGroup } from './utils/activityNormalizer';
 
 export default function App() {
@@ -80,12 +83,36 @@ export default function App() {
     deleteQueuedMessage,
     sendQueuedMessageNow,
     retryQueuedMessage,
+    // Phase 1 Modernization
+    sessionTelemetry,
+    forkSession,
+    revertTurn,
+    compactSession,
+    replyQuestion,
+    // Phase 2, 3, 4 Modernization
+    enqueueMessage,
+    interactionMode,
+    setInteractionMode,
+    listFs,
+    findFs,
+    readFs,
   } = useRelay();
 
-  // Right pane tab on desktop (review, terminal, activity)
-  const [rightPanelTab, setRightPanelTab] = useState<'review' | 'terminal' | 'activity'>('review');
+  // Right pane tab on desktop (review, terminal, activity, files)
+  const [rightPanelTab, setRightPanelTab] = useState<'review' | 'terminal' | 'activity' | 'files'>('review');
   const [newSessionTitle, setNewSessionTitle] = useState('');
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [showTelemetryModal, setShowTelemetryModal] = useState(false);
+  const [isCompacting, setIsCompacting] = useState(false);
+
+  const handleCompact = async (): Promise<boolean> => {
+    setIsCompacting(true);
+    try {
+      return await compactSession();
+    } finally {
+      setIsCompacting(false);
+    }
+  };
 
   // Auto-fetch data on device connection
   useEffect(() => {
@@ -359,6 +386,23 @@ export default function App() {
                   retryQueuedMessage(activeSession.session.id, id);
                 }
               }}
+              telemetry={sessionTelemetry}
+              onOpenTelemetry={() => setShowTelemetryModal(true)}
+              onUndo={revertTurn}
+              onCompact={handleCompact}
+              onFork={forkSession}
+              onClearSession={closeActiveSession}
+              onReplyQuestion={replyQuestion}
+              mode={interactionMode}
+              onModeChange={setInteractionMode}
+              onListFs={listFs}
+              onFindFs={findFs}
+              onReadFs={readFs}
+              onQueueMessage={(text) => {
+                if (activeSession) {
+                  enqueueMessage(activeSession.session.id, text);
+                }
+              }}
               hideTabs={true}
             />
           ) : selectedDevice && !selectedDevice.paired ? (
@@ -443,6 +487,19 @@ export default function App() {
 
               <button
                 type="button"
+                onClick={() => setRightPanelTab('files')}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-medium transition-all ${
+                  rightPanelTab === 'files'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+              >
+                <Folder className="w-3.5 h-3.5" />
+                <span>Files</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setRightPanelTab('activity')}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-medium transition-all ${
                   rightPanelTab === 'activity'
@@ -458,6 +515,14 @@ export default function App() {
 
           {/* Panel Content */}
           <div className="flex-1 overflow-hidden">
+            {rightPanelTab === 'files' && (
+              <FileTreeExplorer
+                onListFs={listFs}
+                onFindFs={findFs}
+                onReadFs={readFs}
+              />
+            )}
+
             {rightPanelTab === 'review' && (
               <ReviewView
                 diffs={sessionDiffs}
@@ -578,6 +643,23 @@ export default function App() {
                 retryQueuedMessage(activeSession.session.id, id);
               }
             }}
+            telemetry={sessionTelemetry}
+            onOpenTelemetry={() => setShowTelemetryModal(true)}
+            onUndo={revertTurn}
+            onCompact={handleCompact}
+            onFork={forkSession}
+            onClearSession={closeActiveSession}
+            onReplyQuestion={replyQuestion}
+            mode={interactionMode}
+            onModeChange={setInteractionMode}
+            onListFs={listFs}
+            onFindFs={findFs}
+            onReadFs={readFs}
+            onQueueMessage={(text) => {
+              if (activeSession) {
+                enqueueMessage(activeSession.session.id, text);
+              }
+            }}
             hideTabs={false}
           />
         ) : (
@@ -631,6 +713,15 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {/* Session Context & Token Telemetry Modal */}
+      <SessionTelemetryModal
+        isOpen={showTelemetryModal}
+        onClose={() => setShowTelemetryModal(false)}
+        telemetry={sessionTelemetry}
+        onCompact={handleCompact}
+        isCompacting={isCompacting}
+      />
     </div>
   );
 }

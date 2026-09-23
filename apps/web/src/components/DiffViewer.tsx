@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { GitCommit, WrapText, ChevronDown, ChevronRight } from 'lucide-react';
+import { GitCommit, WrapText, ChevronDown, ChevronRight, MessageSquarePlus } from 'lucide-react';
 import type { SnapshotFileDiff } from '@opencode-remote/protocol';
 import { FileTypeIcon } from './FileTypeIcon';
 
@@ -7,12 +7,14 @@ interface DiffViewerProps {
   diffs: SnapshotFileDiff[];
   activeFile?: string | null;
   onSelectFile: (file: string) => void;
+  onCommentLine?: (file: string, lineNum: number, snippet: string) => void;
 }
 
 export const DiffViewer: React.FC<DiffViewerProps> = ({
   diffs,
   activeFile,
   onSelectFile,
+  onCommentLine,
 }) => {
   const [isDiffCollapsed, setIsDiffCollapsed] = useState(false);
   const [wrapText, setWrapText] = useState<boolean>(() => {
@@ -174,14 +176,25 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                   if (isAdd) rowBg = 'bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500';
                   if (isDel) rowBg = 'bg-rose-950/40 text-rose-300 border-l-2 border-rose-500';
 
+                  const lineNum = line.newNum || line.oldNum || 1;
                   return (
-                    <div key={idx} className={`flex items-start ${rowBg}`}>
+                    <div key={idx} className={`group flex items-start ${rowBg} relative`}>
                       <span className="w-9 shrink-0 select-none text-right pr-2 text-slate-600 text-[10px]">
                         {line.oldNum ?? ''}
                       </span>
                       <span className="w-9 shrink-0 select-none text-right pr-2 text-slate-600 text-[10px]">
                         {line.newNum ?? ''}
                       </span>
+                      {onCommentLine && (
+                        <button
+                          type="button"
+                          onClick={() => onCommentLine(currentDiff.file, lineNum, line.text)}
+                          title={`Comment on line ${lineNum}`}
+                          className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-indigo-400 hover:text-white hover:bg-indigo-600 transition-opacity cursor-pointer shrink-0 ml-0.5"
+                        >
+                          <MessageSquarePlus className="w-3 h-3" />
+                        </button>
+                      )}
                       <span className="w-4 shrink-0 select-none text-center font-bold text-[10px]">
                         {isAdd ? '+' : isDel ? '-' : ' '}
                       </span>

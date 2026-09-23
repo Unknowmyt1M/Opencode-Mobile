@@ -9,6 +9,7 @@ import type {
   ModelInfo,
   PermissionItem,
   TodoItem,
+  FsEntry,
 } from '@opencode-remote/protocol';
 
 export interface OpenCodeAdapterOptions {
@@ -27,6 +28,9 @@ export class OpenCodeAdapter {
   private defaultModel?: { providerID: string; modelID: string };
   private eventAbortController: AbortController | null = null;
   private isListeningEvents = false;
+  private shouldListenEvents = false;
+  private eventReconnectTimer: NodeJS.Timeout | null = null;
+  private savedOnEvent: ((event: any) => void) | null = null;
 
   constructor(options?: OpenCodeAdapterOptions) {
     const rawUrl = options?.baseUrl || process.env.OPENCODE_URL || 'http://127.0.0.1:4096';
@@ -126,6 +130,14 @@ export class OpenCodeAdapter {
       const rawMessages = (await messagesRes.json()) as any[];
       for (const m of rawMessages || []) {
         const info = m.info || {};
+        // Defensive check: Drop mismatched cross-session message if sessionID doesn't match requested sessionId
+        if (info.sessionID && info.sessionID !== sessionId) {
+          console.warn(
+            `[opencodeAdapter] Discarded mismatched message ${info.id} (message sessionID: ${info.sessionID}, requested session: ${sessionId})`
+          );
+          continue;
+        }
+
         const parts = m.parts || [];
         const textContent = parts
           .filter((p: any) => p.type === 'text' && typeof p.text === 'string')
@@ -139,6 +151,20 @@ export class OpenCodeAdapter {
           info.summary === true ||
           hasCompactionPart;
 
+        const tokens = info.tokens
+          ? {
+              input: typeof info.tokens.input === 'number' ? info.tokens.input : 0,
+              output: typeof info.tokens.output === 'number' ? info.tokens.output : 0,
+              reasoning: typeof info.tokens.reasoning === 'number' ? info.tokens.reasoning : undefined,
+              cache: info.tokens.cache
+                ? {
+                    read: typeof info.tokens.cache.read === 'number' ? info.tokens.cache.read : undefined,
+                    write: typeof info.tokens.cache.write === 'number' ? info.tokens.cache.write : undefined,
+                  }
+                : undefined,
+            }
+          : undefined;
+
         messages.push({
           id: info.id || `msg_${Date.now()}`,
           sessionId: info.sessionID || sessionId,
@@ -147,6 +173,10 @@ export class OpenCodeAdapter {
           createdAt: info.createdAt || Date.now(),
           isCompaction: Boolean(isCompaction),
           summary: info.summary === true ? true : undefined,
+          tokens,
+          cost: typeof info.cost === 'number' ? info.cost : undefined,
+          providerID: typeof info.providerID === 'string' ? info.providerID : undefined,
+          modelID: typeof info.modelID === 'string' ? info.modelID : undefined,
           parts: parts.map((p: any) => ({
             id: p.id,
             type: p.type,
@@ -355,9 +385,22 @@ export class OpenCodeAdapter {
       if (res.status === 204 || res.ok) {
         return clientMessageId;
       }
-    } catch {
-      // If prompt_async fails or is unsupported, fallback to /message below
+      // If server returned status other than 404, do NOT fallback to /message.
+      // This prevents duplicate prompt execution if the request was accepted or failed validation.
+      if (res.status !== 404) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`Failed to send message via prompt_async: HTTP ${res.status} ${errText}`);
+      }
+    } catch (err: any) {
+      if (err.message && err.message.startsWith('Failed to send message via prompt_async: HTTP')) {
+        throw err;
+      }
+      // If network/fetch error occurred, rethrow instead of blindly duplicating to /message
+      console.warn(`[opencodeAdapter] prompt_async failed: ${err.message}. Not falling back to /message to prevent duplicate execution.`);
+      throw err;
     }
+
+    // Fallback to /message only if OpenCode returned 404 (unsupported endpoint)
 
     // Fallback to /message
     const res = await fetch(`${this.baseUrl}/session/${sessionId}/message`, {
@@ -380,6 +423,14 @@ export class OpenCodeAdapter {
    * Subscribes to the single global OpenCode SSE stream (/event)
    */
   async startEventStream(onEvent: (event: any) => void) {
+    this.savedOnEvent = onEvent;
+    this.shouldListenEvents = true;
+
+    if (this.eventReconnectTimer) {
+      clearTimeout(this.eventReconnectTimer);
+      this.eventReconnectTimer = null;
+    }
+
     if (this.isListeningEvents) return;
     this.isListeningEvents = true;
 
@@ -400,6 +451,7 @@ export class OpenCodeAdapter {
 
       if (!res.ok || !res.body) {
         this.isListeningEvents = false;
+        this.scheduleEventReconnect();
         return;
       }
 
@@ -432,14 +484,32 @@ export class OpenCodeAdapter {
       }
     } catch (err: any) {
       if (err.name !== 'AbortError') {
-        // SSE disconnected, will retry later when agent checks
+        console.warn('[opencodeAdapter] Event stream disconnected:', err.message);
       }
     } finally {
       this.isListeningEvents = false;
+      if (this.shouldListenEvents) {
+        this.scheduleEventReconnect();
+      }
     }
   }
 
+  private scheduleEventReconnect() {
+    if (!this.shouldListenEvents || this.eventReconnectTimer) return;
+    this.eventReconnectTimer = setTimeout(() => {
+      this.eventReconnectTimer = null;
+      if (this.shouldListenEvents && this.savedOnEvent) {
+        this.startEventStream(this.savedOnEvent).catch(() => {});
+      }
+    }, 2000);
+  }
+
   stopEventStream() {
+    this.shouldListenEvents = false;
+    if (this.eventReconnectTimer) {
+      clearTimeout(this.eventReconnectTimer);
+      this.eventReconnectTimer = null;
+    }
     this.isListeningEvents = false;
     if (this.eventAbortController) {
       this.eventAbortController.abort();
@@ -572,6 +642,7 @@ export class OpenCodeAdapter {
           name: m.name || m.id,
           providerId: p.id,
           providerName: p.name || p.id,
+          contextLimit: typeof m.limit?.context === 'number' ? m.limit.context : undefined,
         });
       }
     }
@@ -632,5 +703,130 @@ export class OpenCodeAdapter {
       body: JSON.stringify({ reply }),
     });
     return res.ok;
+  }
+
+  // ==========================================
+  // Phase 1 Modernization: Session Fork, Revert, Compaction & Question
+  // ==========================================
+  async revertSession(sessionId: string, messageId?: string): Promise<{ success: boolean; revertedPrompt?: string }> {
+    let revertedPrompt: string | undefined = undefined;
+    try {
+      const { messages } = await this.getSession(sessionId);
+      const userMsgs = messages.filter((m) => m.role === 'user');
+      if (userMsgs.length > 0) {
+        const target = messageId ? userMsgs.find((m) => m.id === messageId) : userMsgs[userMsgs.length - 1];
+        if (target) {
+          revertedPrompt = target.content;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    const payload: Record<string, any> = {};
+    if (messageId) payload.messageID = messageId;
+
+    const res = await fetch(`${this.baseUrl}/session/${encodeURIComponent(sessionId)}/revert`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(payload),
+    });
+
+    return {
+      success: res.ok,
+      revertedPrompt,
+    };
+  }
+
+  async forkSession(sessionId: string, messageId?: string): Promise<OpenCodeSession> {
+    const payload: Record<string, any> = {};
+    if (messageId) payload.messageID = messageId;
+
+    const res = await fetch(`${this.baseUrl}/session/${encodeURIComponent(sessionId)}/fork`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Failed to fork session: HTTP ${res.status}`);
+    }
+
+    const data = (await res.json()) as any;
+    return {
+      id: data.id,
+      title: data.title || 'Forked Session',
+      createdAt: data.createdAt || Date.now(),
+      updatedAt: data.updatedAt,
+    };
+  }
+
+  async compactSession(sessionId: string): Promise<boolean> {
+    const res = await fetch(`${this.baseUrl}/session/${encodeURIComponent(sessionId)}/summarize`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({}),
+    });
+    return res.ok;
+  }
+
+  async replyQuestion(requestId: string, answers: string[][]): Promise<boolean> {
+    const res = await fetch(`${this.baseUrl}/question/${encodeURIComponent(requestId)}/reply`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ answers }),
+    });
+    return res.ok;
+  }
+
+  async listFs(pathQuery?: string): Promise<FsEntry[]> {
+    const url = new URL(`${this.baseUrl}/api/fs/list`);
+    if (pathQuery) url.searchParams.set('path', pathQuery);
+    const res = await fetch(url.toString(), {
+      headers: this.getHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to list filesystem: HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as any;
+    const rawList = Array.isArray(data) ? data : data?.data || [];
+    return rawList.map((item: any) => ({
+      path: item.path?.replace(/[/\\]$/, ''),
+      type: item.type === 'directory' ? 'directory' : 'file',
+    }));
+  }
+
+  async findFs(query: string, limit?: number): Promise<FsEntry[]> {
+    const url = new URL(`${this.baseUrl}/api/fs/find`);
+    url.searchParams.set('query', query);
+    if (limit) url.searchParams.set('limit', String(limit));
+    const res = await fetch(url.toString(), {
+      headers: this.getHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to find files: HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as any;
+    const rawList = Array.isArray(data) ? data : data?.data || [];
+    return rawList.map((item: any) => ({
+      path: item.path?.replace(/[/\\]$/, ''),
+      type: item.type === 'directory' ? 'directory' : 'file',
+    }));
+  }
+
+  async readFs(filePath: string): Promise<{ content: string; mime?: string }> {
+    const cleanPath = filePath.replace(/^[/\\]+/, '');
+    const res = await fetch(`${this.baseUrl}/api/fs/read/${encodeURI(cleanPath)}`, {
+      headers: this.getHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to read file: HTTP ${res.status}`);
+    }
+    const contentType = res.headers.get('content-type') || 'text/plain';
+    const content = await res.text();
+    return {
+      content,
+      mime: contentType,
+    };
   }
 }

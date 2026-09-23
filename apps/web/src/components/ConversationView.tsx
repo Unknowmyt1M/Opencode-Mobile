@@ -7,6 +7,7 @@ import {
   Activity,
   Sparkles,
   ChevronDown,
+  Folder,
 } from 'lucide-react';
 import type {
   OpenCodeSession,
@@ -17,6 +18,9 @@ import type {
   ModelInfo,
   PermissionItem,
   TodoItem,
+  ContextMention,
+  SessionInteractionMode,
+  FsEntry,
 } from '@opencode-remote/protocol';
 import { type WorkspaceTab } from '../useRelay';
 import { ReviewView } from './ReviewView';
@@ -27,12 +31,19 @@ import { normalizeConversationTurns, type TurnElement, type ActivityItem, type T
 import { Composer } from './Composer';
 import { TodoWidget } from './TodoWidget';
 import { QueuedMessages } from './QueuedMessages';
+import { QuestionCard } from './QuestionCard';
+import { FileTreeExplorer } from './FileTreeExplorer';
+import { ContextMentionModal } from './ContextMentionModal';
+import { SafeRevertModal } from './SafeRevertModal';
 import type { QueuedMessage } from '../types/queue';
+import type { SessionTelemetry } from '../useRelay';
+import type { MessagePart } from '@opencode-remote/protocol';
 
 function groupTurnElements(elements: TurnElement[]) {
   const chunks: Array<
     | { type: 'activities'; activities: ActivityItem[]; key: string }
     | { type: 'text'; content: string; key: string }
+    | { type: 'question'; part: MessagePart; key: string }
   > = [];
 
   for (let i = 0; i < elements.length; i++) {
@@ -59,6 +70,12 @@ function groupTurnElements(elements: TurnElement[]) {
           key: `chunk_text_${el.id}_${i}`,
         });
       }
+    } else if (el.type === 'question') {
+      chunks.push({
+        type: 'question',
+        part: el.part,
+        key: `chunk_q_${el.id}_${i}`,
+      });
     }
   }
 
@@ -72,6 +89,7 @@ interface TurnItemProps {
   isWaitingForResponse?: boolean;
   onSelectDiffFile: (file: string) => void;
   onSelectTab: (tab: WorkspaceTab) => void;
+  onReplyQuestion?: (requestId: string, answers: string[][]) => Promise<boolean | void> | void;
 }
 
 const TurnItem: React.FC<TurnItemProps> = React.memo(
@@ -82,6 +100,7 @@ const TurnItem: React.FC<TurnItemProps> = React.memo(
     isWaitingForResponse,
     onSelectDiffFile,
     onSelectTab,
+    onReplyQuestion,
   }) => {
     const [showCompactedSummary, setShowCompactedSummary] = useState(false);
 
@@ -166,6 +185,21 @@ const TurnItem: React.FC<TurnItemProps> = React.memo(
               return (
                 <div key={chunk.key} className="px-1 py-1 w-full max-w-3xl">
                   <MarkdownView content={chunk.content} />
+                </div>
+              );
+            }
+            if (chunk.type === 'question') {
+              return (
+                <div key={chunk.key} className="w-full max-w-3xl my-2">
+                  <QuestionCard
+                    input={chunk.part.state?.input}
+                    output={chunk.part.state?.output}
+                    status={chunk.part.state?.status}
+                    requestId={chunk.part.callID}
+                    onReply={async (answers) => {
+                      await onReplyQuestion?.(chunk.part.callID || '', answers);
+                    }}
+                  />
                 </div>
               );
             }
@@ -260,6 +294,21 @@ interface ConversationViewProps {
   onDeleteQueuedMessage?: (id: string) => void;
   onSendQueuedMessageNow?: (id: string) => void;
   onRetryQueuedMessage?: (id: string) => void;
+  // Phase 1 Modernization
+  telemetry?: SessionTelemetry | null;
+  onOpenTelemetry?: () => void;
+  onUndo?: () => Promise<{ success: boolean; revertedPrompt?: string }>;
+  onCompact?: () => Promise<boolean> | void;
+  onFork?: () => Promise<any> | void;
+  onClearSession?: () => void;
+  onReplyQuestion?: (requestId: string, answers: string[][]) => Promise<boolean | void> | void;
+  // Phase 2, 3, 4 Modernization
+  mode?: SessionInteractionMode;
+  onModeChange?: (mode: SessionInteractionMode) => void;
+  onListFs?: (path?: string) => Promise<FsEntry[]>;
+  onFindFs?: (query: string) => Promise<FsEntry[]>;
+  onReadFs?: (path: string) => Promise<{ content: string; mime?: string } | null>;
+  onQueueMessage?: (text: string) => void;
 }
 
 export const ConversationView: React.FC<ConversationViewProps> = ({
@@ -302,10 +351,47 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   onDeleteQueuedMessage,
   onSendQueuedMessageNow,
   onRetryQueuedMessage,
+  telemetry,
+  onOpenTelemetry,
+  onUndo,
+  onCompact,
+  onFork,
+  onClearSession,
+  onReplyQuestion,
+  mode,
+  onModeChange,
+  onListFs,
+  onFindFs,
+  onReadFs,
+  onQueueMessage,
 }) => {
   const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const [composerMentions, setComposerMentions] = useState<ContextMention[]>([]);
+  const [showMentionModal, setShowMentionModal] = useState(false);
+  const [showSafeRevertModal, setShowSafeRevertModal] = useState(false);
+  const [isRevertingTurn, setIsRevertingTurn] = useState(false);
+
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const bottomAnchorRef = useRef<HTMLDivElement>(null);
+
+  const handleCommentLine = (file: string, lineNum: number, _snippet: string) => {
+    setComposerMentions((prev) => [
+      ...prev,
+      { path: file, lineStart: lineNum, lineEnd: lineNum },
+    ]);
+    onSelectTab('chat');
+  };
+
+  const handleConfirmRevert = async () => {
+    if (!onUndo) return;
+    setIsRevertingTurn(true);
+    try {
+      await onUndo();
+    } finally {
+      setIsRevertingTurn(false);
+      setShowSafeRevertModal(false);
+    }
+  };
 
   const conversationTurns = React.useMemo(
     () => normalizeConversationTurns(messages, streamingText, isStreaming, diffs),
@@ -342,6 +428,11 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
       label: 'Review',
       icon: <FileCheck2 className="w-3.5 h-3.5" />,
       badge: diffs.length,
+    },
+    {
+      id: 'files',
+      label: 'Files',
+      icon: <Folder className="w-3.5 h-3.5" />,
     },
     {
       id: 'terminal',
@@ -479,6 +570,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 isWaitingForResponse={isWaitingForResponse}
                 onSelectDiffFile={onSelectDiffFile}
                 onSelectTab={onSelectTab}
+                onReplyQuestion={onReplyQuestion}
               />
             ))}
 
@@ -502,12 +594,26 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
         )}
 
         {/* Review Tab (Files & Diffs unified) */}
-        {!hideTabs && (activeTab === 'review' || activeTab === 'diff' || activeTab === 'files') && (
+        {!hideTabs && (activeTab === 'review' || activeTab === 'diff') && (
           <ReviewView
             diffs={diffs}
             activeFile={activeDiffFile || null}
             onSelectFile={onSelectDiffFile}
             onRefresh={onRefreshDiff}
+            onCommentLine={handleCommentLine}
+          />
+        )}
+
+        {/* Project File Tree Explorer Tab */}
+        {!hideTabs && activeTab === 'files' && onListFs && onFindFs && onReadFs && (
+          <FileTreeExplorer
+            onListFs={onListFs}
+            onFindFs={onFindFs}
+            onReadFs={onReadFs}
+            onAddMention={(mention) => {
+              setComposerMentions((prev) => [...prev, mention]);
+              onSelectTab('chat');
+            }}
           />
         )}
 
@@ -586,8 +692,45 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
             editingItem={editingQueueItem}
             onSaveEdit={onSaveQueuedMessageEdit}
             onCancelEdit={onCancelQueuedMessageEdit}
+            telemetry={telemetry}
+            onOpenTelemetry={onOpenTelemetry}
+            onUndo={async () => {
+              setShowSafeRevertModal(true);
+              return { success: true };
+            }}
+            onCompact={onCompact}
+            onFork={onFork}
+            onSelectTab={onSelectTab}
+            onClearSession={onClearSession}
+            mode={mode}
+            onModeChange={onModeChange}
+            mentions={composerMentions}
+            onRemoveMention={(idx) => setComposerMentions((prev) => prev.filter((_, i) => i !== idx))}
+            onOpenMentionModal={() => setShowMentionModal(true)}
+            onQueueMessage={onQueueMessage}
           />
         </div>
+      )}
+
+      {/* Context Mention Modal */}
+      {showMentionModal && onFindFs && (
+        <ContextMentionModal
+          isOpen={showMentionModal}
+          onClose={() => setShowMentionModal(false)}
+          onSelect={(mention) => setComposerMentions((prev) => [...prev, mention])}
+          onFindFiles={onFindFs}
+        />
+      )}
+
+      {/* 3-Phase Safe Revert Modal */}
+      {showSafeRevertModal && (
+        <SafeRevertModal
+          isOpen={showSafeRevertModal}
+          onClose={() => setShowSafeRevertModal(false)}
+          onConfirm={handleConfirmRevert}
+          diffs={diffs}
+          isReverting={isRevertingTurn}
+        />
       )}
     </div>
   );

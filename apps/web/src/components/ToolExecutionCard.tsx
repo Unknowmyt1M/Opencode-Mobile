@@ -1,22 +1,27 @@
 import { useState } from 'react';
 import {
   ChevronRight,
+  ChevronDown,
   ExternalLink,
   Copy,
   Check,
+  Bot,
+  Loader2,
+  CheckCircle2,
+  AlertTriangle,
 } from 'lucide-react';
 import type { MessagePart, SnapshotFileDiff } from '@opencode-remote/protocol';
 import { FileTypeIcon } from './FileTypeIcon';
+import { QuestionCard } from './QuestionCard';
 
 interface ToolExecutionCardProps {
   part: MessagePart;
   diffs?: SnapshotFileDiff[];
   onViewFile?: (file: string) => void;
+  onReplyQuestion?: (answers: string[][]) => Promise<void> | void;
 }
 
-
-
-export function ToolExecutionCard({ part, diffs, onViewFile }: ToolExecutionCardProps) {
+export function ToolExecutionCard({ part, diffs, onViewFile, onReplyQuestion }: ToolExecutionCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showAllLines, setShowAllLines] = useState(false);
@@ -24,6 +29,111 @@ export function ToolExecutionCard({ part, diffs, onViewFile }: ToolExecutionCard
   const state = (part.state as any) || {};
   const tool = (part.tool || 'tool').toLowerCase();
   const status = state.status || 'completed';
+
+  if (tool === 'question' || tool === 'ask' || part.type === 'question') {
+    return (
+      <QuestionCard
+        input={state.input}
+        output={state.output}
+        status={status}
+        requestId={part.callID}
+        onReply={onReplyQuestion}
+      />
+    );
+  }
+
+  if (tool === 'task' || tool === 'subagent') {
+    const taskDescription =
+      state.input?.description ||
+      state.input?.prompt ||
+      state.title ||
+      'Subagent Autonomous Task';
+    const subagentRole = state.input?.role || 'Subagent';
+    const isRunning = status === 'running' || status === 'pending';
+    const isError = status === 'error';
+    const isDone = status === 'completed' || (!isRunning && !isError);
+
+    return (
+      <div className="my-2 rounded-xl border border-purple-500/30 bg-purple-950/20 overflow-hidden text-xs shadow-sm">
+        <div
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="px-3.5 py-2.5 flex items-center justify-between gap-3 cursor-pointer hover:bg-purple-950/40 select-none transition-colors"
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-6 h-6 rounded-lg bg-purple-900/60 border border-purple-500/40 text-purple-300 flex items-center justify-center shrink-0">
+              <Bot className="w-3.5 h-3.5" />
+            </div>
+            <div className="flex flex-col min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-purple-200 truncate">
+                  {subagentRole}
+                </span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded-full font-mono bg-purple-900/80 text-purple-300 border border-purple-500/30">
+                  Subagent
+                </span>
+              </div>
+              <span className="text-[11px] text-zinc-400 truncate">
+                {taskDescription}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {isRunning && (
+              <span className="flex items-center gap-1.5 text-indigo-400 font-mono text-[11px]">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Running...</span>
+              </span>
+            )}
+            {isDone && (
+              <span className="flex items-center gap-1 text-emerald-400 font-mono text-[11px]">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Done</span>
+              </span>
+            )}
+            {isError && (
+              <span className="flex items-center gap-1 text-rose-400 font-mono text-[11px]">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>Error</span>
+              </span>
+            )}
+            {isExpanded ? (
+              <ChevronDown className="w-3.5 h-3.5 text-zinc-400" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5 text-zinc-400" />
+            )}
+          </div>
+        </div>
+
+        {isExpanded && (
+          <div className="p-3 border-t border-purple-500/20 bg-purple-950/30 space-y-2 text-xs">
+            {state.input?.prompt && (
+              <div>
+                <span className="text-[10px] font-bold text-purple-300 uppercase tracking-wider block mb-1">
+                  Task Prompt
+                </span>
+                <div className="p-2 rounded-lg bg-zinc-950/80 border border-zinc-800 text-zinc-300 font-mono text-[11px] whitespace-pre-wrap select-text">
+                  {state.input.prompt}
+                </div>
+              </div>
+            )}
+            {state.output && (
+              <div>
+                <span className="text-[10px] font-bold text-emerald-300 uppercase tracking-wider block mb-1">
+                  Task Result
+                </span>
+                <div className="p-2 rounded-lg bg-zinc-950/80 border border-zinc-800 text-zinc-200 font-mono text-[11px] whitespace-pre-wrap select-text max-h-60 overflow-y-auto">
+                  {typeof state.output === 'string'
+                    ? state.output
+                    : JSON.stringify(state.output, null, 2)}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   const rawPath =
     state.title ||

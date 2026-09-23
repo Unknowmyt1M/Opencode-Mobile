@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   WrapText,
   ChevronsUpDown,
+  MessageSquarePlus,
 } from 'lucide-react';
 import type { SnapshotFileDiff } from '@opencode-remote/protocol';
 import { FileTypeIcon } from './FileTypeIcon';
@@ -16,6 +17,7 @@ interface ReviewViewProps {
   activeFile: string | null;
   onSelectFile: (file: string) => void;
   onRefresh: () => void;
+  onCommentLine?: (file: string, lineNum: number, snippet: string) => void;
 }
 
 interface ParsedDiffLine {
@@ -83,6 +85,7 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
   activeFile,
   onSelectFile,
   onRefresh,
+  onCommentLine,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -355,10 +358,11 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
                               const isAdd = line.type === 'add';
                               const isDel = line.type === 'del';
 
+                              const lineNum = line.newNum || line.oldNum || 1;
                               return (
                                 <div
                                   key={idx}
-                                  className={`flex items-start ${
+                                  className={`group flex items-start relative ${
                                     isAdd
                                       ? 'bg-emerald-950/35 text-emerald-200 border-l-2 border-emerald-500'
                                       : isDel
@@ -372,6 +376,16 @@ export const ReviewView: React.FC<ReviewViewProps> = ({
                                   <span className="w-10 shrink-0 select-none text-right pr-2 text-slate-600 text-[10px] font-mono">
                                     {line.newNum ?? ''}
                                   </span>
+                                  {onCommentLine && (
+                                    <button
+                                      type="button"
+                                      onClick={() => onCommentLine(diff.file, lineNum, line.text)}
+                                      title={`Comment on line ${lineNum}`}
+                                      className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-indigo-400 hover:text-white hover:bg-indigo-600 transition-opacity cursor-pointer shrink-0 ml-0.5"
+                                    >
+                                      <MessageSquarePlus className="w-3 h-3" />
+                                    </button>
+                                  )}
                                   <span className="w-4 shrink-0 select-none text-center font-bold text-[10px]">
                                     {isAdd ? '+' : isDel ? '-' : ' '}
                                   </span>
