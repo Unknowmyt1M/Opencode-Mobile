@@ -410,6 +410,9 @@ export const SessionGetResultMessageSchema = z.object({
     deviceId: z.string().min(1).max(128),
     session: OpenCodeSessionSchema,
     messages: z.array(SessionMessageSchema),
+    isStreaming: z.boolean().optional(),
+    activeMessageId: z.string().optional(),
+    diffs: z.array(SnapshotFileDiffSchema).optional(),
   }),
 });
 

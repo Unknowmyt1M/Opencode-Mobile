@@ -486,12 +486,23 @@ export class RemoteAgent {
         case 'SESSION_GET': {
           try {
             const { session, messages } = await this.adapter.getSession(msg.payload.sessionId);
+            const currentTurn = this.sessionTurns.get(msg.payload.sessionId);
+            const isStreaming = Boolean(currentTurn && currentTurn.startedEmitted && !currentTurn.completedEmitted);
+
+            let diffs: SnapshotFileDiff[] | undefined;
+            try {
+              diffs = await this.adapter.getSessionDiff(msg.payload.sessionId);
+            } catch {}
+
             const res = createMessage(
               'SESSION_GET_RESULT',
               {
                 deviceId: this.config.deviceId,
                 session,
                 messages,
+                isStreaming,
+                activeMessageId: currentTurn?.messageId,
+                diffs,
               },
               msg.id
             );

@@ -820,13 +820,28 @@ export function buildRelayServer(options: RelayOptions = {}): {
               break;
             }
 
+            case 'PERMISSION_REPLY_RESULT': {
+              const clientSocket = requestToClient.get(message.id);
+              if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
+                clientSocket.send(JSON.stringify(message));
+                requestToClient.delete(message.id);
+              }
+              if (message.payload?.deviceId) {
+                registry.broadcastToAuthorizedClients(
+                  message.payload.deviceId,
+                  message,
+                  (d, t) => store.verifyDeviceToken(d, t)
+                );
+              }
+              break;
+            }
+
             case 'SESSION_ABORT_RESULT':
             case 'SESSION_FORK_RESULT':
             case 'SESSION_REVERT_RESULT':
             case 'QUESTION_REPLY_RESULT':
             case 'MODEL_LIST_RESULT':
             case 'PERMISSION_LIST_RESULT':
-            case 'PERMISSION_REPLY_RESULT':
             case 'TODO_LIST_RESULT':
             case 'FS_LIST_RESULT':
             case 'FS_FIND_RESULT':

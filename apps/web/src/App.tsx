@@ -114,10 +114,17 @@ export default function App() {
     }
   };
 
-  // Auto-fetch data on device connection
+  const activeSessionRef = React.useRef(activeSession);
+  activeSessionRef.current = activeSession;
+
+  // Auto-fetch data on device connection & auto-mirror active/latest session
   useEffect(() => {
     if (selectedDevice?.paired && selectedDevice?.opencodeStatus === 'connected') {
-      fetchSessions(selectedDevice.deviceId);
+      fetchSessions(selectedDevice.deviceId).then((loadedSessions) => {
+        if (!activeSessionRef.current && loadedSessions && loadedSessions.length > 0) {
+          openSession(selectedDevice.deviceId, loadedSessions[0].id);
+        }
+      });
       fetchModels();
       fetchPtys();
       fetchPermissions();
@@ -130,6 +137,7 @@ export default function App() {
     fetchModels,
     fetchPtys,
     fetchPermissions,
+    openSession,
   ]);
 
   const handleCreateSessionSubmit = async (e: React.FormEvent) => {

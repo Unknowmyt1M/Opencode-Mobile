@@ -428,6 +428,21 @@ export function useRelay(relayWsUrl?: string) {
                 session,
                 messages,
               });
+
+              if (msg.payload.isStreaming) {
+                updateSessionRuntime(session.id, (prev) => ({
+                  ...prev,
+                  isStreaming: true,
+                  isWaitingForResponse: false,
+                  activeMessageId: msg.payload.activeMessageId || prev.activeMessageId,
+                  diffs: msg.payload.diffs || prev.diffs,
+                }));
+              } else if (msg.payload.diffs) {
+                updateSessionRuntime(session.id, (prev) => ({
+                  ...prev,
+                  diffs: msg.payload.diffs || prev.diffs,
+                }));
+              }
               break;
             }
 
@@ -665,6 +680,114 @@ export function useRelay(relayWsUrl?: string) {
                 }));
               }
 
+              // Handle native OpenCode v2 user prompt creation (session.next.prompted)
+              if (eventType === 'session.next.prompted' && sessionId) {
+                const promptText = props.prompt?.text || '';
+                const messageId = props.messageID;
+                const timestamp = props.timestamp || Date.now();
+
+                if (activeSessionRef.current && activeSessionRef.current.session.id === sessionId) {
+                  setActiveSession((curr) => {
+                    if (!curr || curr.session.id !== sessionId) return curr;
+                    const msgs = [...curr.messages];
+                    const existingIdx = msgs.findIndex(
+                      (m) =>
+                        m.id === messageId ||
+                        (m.role === 'user' && m.id.startsWith('user_') && m.content === promptText)
+                    );
+                    if (existingIdx >= 0) {
+                      msgs[existingIdx] = {
+                        ...msgs[existingIdx],
+                        id: messageId || msgs[existingIdx].id,
+                        createdAt: timestamp,
+                      };
+                      return { ...curr, messages: msgs };
+                    }
+                    const peerUserMsg: SessionMessage = {
+                      id: messageId || `user_${Date.now()}`,
+                      sessionId,
+                      role: 'user',
+                      content: promptText,
+                      createdAt: timestamp,
+                    };
+                    return { ...curr, messages: [...msgs, peerUserMsg] };
+                  });
+                }
+              }
+
+              // Handle native OpenCode v1 user message creation (message.updated with role: user)
+              if (eventType === 'message.updated' && props.info?.role === 'user' && sessionId) {
+                const info = props.info;
+                const messageId = info.id;
+                const content = info.content || '';
+                const timestamp = info.time?.created || Date.now();
+
+                if (activeSessionRef.current && activeSessionRef.current.session.id === sessionId) {
+                  setActiveSession((curr) => {
+                    if (!curr || curr.session.id !== sessionId) return curr;
+                    const msgs = [...curr.messages];
+                    const existingIdx = msgs.findIndex(
+                      (m) =>
+                        m.id === messageId ||
+                        (m.role === 'user' && m.id.startsWith('user_') && m.content === content)
+                    );
+                    if (existingIdx >= 0) {
+                      msgs[existingIdx] = {
+                        ...msgs[existingIdx],
+                        id: messageId || msgs[existingIdx].id,
+                        createdAt: timestamp,
+                      };
+                      return { ...curr, messages: msgs };
+                    }
+                    const peerUserMsg: SessionMessage = {
+                      id: messageId || `user_${Date.now()}`,
+                      sessionId,
+                      role: 'user',
+                      content,
+                      createdAt: timestamp,
+                    };
+                    return { ...curr, messages: [...msgs, peerUserMsg] };
+                  });
+                }
+              }
+
+              // Handle native OpenCode session status (busy / idle)
+              if (eventType === 'session.status' && sessionId) {
+                const statusType = props.status?.type;
+                if (statusType === 'busy') {
+                  updateSessionRuntime(sessionId, (prev) => ({
+                    ...prev,
+                    isStreaming: true,
+                    isWaitingForResponse: false,
+                  }));
+                } else if (statusType === 'idle') {
+                  updateSessionRuntime(sessionId, (prev) => ({
+                    ...prev,
+                    isStreaming: false,
+                    isWaitingForResponse: false,
+                  }));
+                }
+              }
+
+              if (eventType === 'session.idle' && sessionId) {
+                updateSessionRuntime(sessionId, (prev) => ({
+                  ...prev,
+                  isStreaming: false,
+                  isWaitingForResponse: false,
+                }));
+              }
+
+              // Handle native OpenCode permission resolved / replied
+              if (
+                (eventType === 'permission.replied' || eventType === 'permission.v2.replied') &&
+                (props.requestID || props.requestId || props.id)
+              ) {
+                const targetReqId = props.requestID || props.requestId || props.id;
+                setPermissions((prev) =>
+                  prev.filter((p) => p.id !== targetReqId && (p as any).requestId !== targetReqId)
+                );
+              }
+
               // Handle message.part.updated or message.part
               if ((eventType === 'message.part.updated' || eventType === 'message.part') && props.part) {
                 const part = props.part;
@@ -755,6 +878,16 @@ export function useRelay(relayWsUrl?: string) {
               const perm = msg.payload as any;
               playSound('permission');
               setPermissions((prev) => [...prev.filter((p) => p.id !== perm.id), perm]);
+              break;
+            }
+
+            case 'PERMISSION_REPLY_RESULT': {
+              const { requestId, success } = msg.payload;
+              if (success && requestId) {
+                setPermissions((prev) =>
+                  prev.filter((p) => p.id !== requestId && (p as any).requestId !== requestId)
+                );
+              }
               break;
             }
 

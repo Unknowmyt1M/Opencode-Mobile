@@ -288,6 +288,9 @@ export interface SessionGetResultPayload {
   deviceId: string;
   session: OpenCodeSession;
   messages: SessionMessage[];
+  isStreaming?: boolean;
+  activeMessageId?: string;
+  diffs?: SnapshotFileDiff[];
 }
 
 export interface SessionSubscribePayload {
