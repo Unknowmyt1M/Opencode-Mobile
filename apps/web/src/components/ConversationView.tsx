@@ -83,6 +83,45 @@ const TurnItem: React.FC<TurnItemProps> = React.memo(
     onSelectDiffFile,
     onSelectTab,
   }) => {
+    const [showCompactedSummary, setShowCompactedSummary] = useState(false);
+
+    if (turn.isCompaction) {
+      return (
+        <div className="w-full my-4 flex flex-col items-center select-none">
+          <div className="w-full flex items-center gap-3">
+            <div className="flex-1 border-t border-dashed border-zinc-700/60" />
+            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-[11px] font-medium text-zinc-400 shadow-sm">
+              <Sparkles className="w-3 h-3 text-amber-400" />
+              <span>Session Compacted</span>
+            </div>
+            <div className="flex-1 border-t border-dashed border-zinc-700/60" />
+          </div>
+
+          {turn.compactionSummary && (
+            <div className="mt-2 w-full max-w-2xl px-2">
+              <button
+                type="button"
+                onClick={() => setShowCompactedSummary((prev) => !prev)}
+                className="text-[11px] text-zinc-400 hover:text-zinc-200 transition-colors flex items-center gap-1.5 mx-auto bg-zinc-900/60 hover:bg-zinc-800/80 px-2.5 py-1 rounded-md border border-zinc-800/80 cursor-pointer"
+              >
+                <span>{showCompactedSummary ? 'Hide compacted summary' : 'Show compacted summary'}</span>
+                <ChevronDown
+                  className={`w-3 h-3 text-zinc-500 transition-transform duration-200 ${
+                    showCompactedSummary ? 'rotate-180' : ''
+                  }`}
+                />
+              </button>
+              {showCompactedSummary && (
+                <div className="mt-2.5 p-3 rounded-xl bg-zinc-900/90 border border-zinc-800 text-xs text-zinc-300 shadow-inner select-text">
+                  <MarkdownView content={turn.compactionSummary} />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     const cleanUserPrompt = turn.userMessage
       ? turn.userMessage.content
           .replace(/<supermemory-recall>[\s\S]*?<\/supermemory-recall>/gi, '')

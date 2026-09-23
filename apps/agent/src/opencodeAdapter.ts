@@ -132,12 +132,20 @@ export class OpenCodeAdapter {
           .map((p: any) => p.text)
           .join('\n');
 
+        const isCompaction =
+          info.mode === 'compaction' ||
+          info.agent === 'compaction' ||
+          Boolean(info.summary) ||
+          parts.some((p: any) => p.type === 'compaction');
+
         messages.push({
           id: info.id || `msg_${Date.now()}`,
           sessionId: info.sessionID || sessionId,
           role: info.role === 'user' ? 'user' : info.role === 'system' ? 'system' : 'assistant',
           content: textContent || (parts[0]?.text ?? ''),
           createdAt: info.createdAt || Date.now(),
+          isCompaction: Boolean(isCompaction),
+          summary: typeof info.summary === 'boolean' || (typeof info.summary === 'object' && info.summary !== null) ? info.summary : undefined,
           parts: parts.map((p: any) => ({
             id: p.id,
             type: p.type,

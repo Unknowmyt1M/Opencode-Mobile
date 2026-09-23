@@ -61,6 +61,8 @@ export const SessionMessageSchema = z.object({
   content: z.string(),
   createdAt: z.number().int(),
   parts: z.array(MessagePartSchema).optional(),
+  isCompaction: z.boolean().optional(),
+  summary: z.union([z.boolean(), z.record(z.unknown())]).optional(),
 });
 
 export const SnapshotFileDiffSchema = z.object({

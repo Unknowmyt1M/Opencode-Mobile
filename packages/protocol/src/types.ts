@@ -67,6 +67,8 @@ export interface SessionMessage {
   content: string;
   createdAt: number;
   parts?: MessagePart[];
+  isCompaction?: boolean;
+  summary?: boolean | Record<string, unknown>;
 }
 
 export interface SnapshotFileDiff {
