@@ -119,10 +119,17 @@ export function buildRelayServer(options: RelayOptions = {}): {
                 socket
               );
 
-              // Always generate active pairing code so new clients / browsers can pair
-              const session = store.createPairingCode(deviceId, deviceName);
-              const pairingCode = session.code;
-              const pairingExpiresAt = session.expiresAt;
+              // Generate pairing code if device is NOT already paired, or if explicitly requested
+              let pairingCode: string | undefined;
+              let pairingExpiresAt: number | undefined;
+
+              const shouldGeneratePairing = !isPaired || Boolean((message.payload as any)?.requestPairingCode);
+
+              if (shouldGeneratePairing) {
+                const session = store.createPairingCode(deviceId, deviceName);
+                pairingCode = session.code;
+                pairingExpiresAt = session.expiresAt;
+              }
 
               const ack = createMessage('AGENT_HELLO_ACK', {
                 success: true,

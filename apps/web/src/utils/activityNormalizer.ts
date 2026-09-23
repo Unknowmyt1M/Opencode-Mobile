@@ -154,15 +154,21 @@ export function normalizeConversationTurns(
     const parts = msg.parts || [];
 
     // Check if this message represents session compaction
+    const hasCompactionPart = Boolean(parts.find((p: any) => p.type === 'compaction'));
     const isCompaction =
       Boolean(msg.isCompaction) ||
-      (msg as any).summary !== undefined ||
-      Boolean(parts.find((p: any) => p.type === 'compaction'));
+      msg.summary === true ||
+      hasCompactionPart;
 
-    if (isCompaction) {
+    // A real user message with no compaction part is NEVER compaction!
+    const isRealUserMessage = msg.role === 'user' && !hasCompactionPart;
+
+    if (isCompaction && !isRealUserMessage) {
+      const compactionPart = parts.find((p: any) => p.type === 'compaction');
+      const textPart = parts.find((p: any) => p.type === 'text');
       const rawSummaryText =
-        msg.content ||
-        parts.find((p: any) => p.type === 'compaction' || p.type === 'text')?.text ||
+        (compactionPart && compactionPart.text) ||
+        (msg.role === 'assistant' ? (msg.content || textPart?.text) : '') ||
         'Session context was summarized and compacted to preserve memory.';
       const summaryText = rawSummaryText
         .replace(/<supermemory-recall>[\s\S]*?<\/supermemory-recall>/gi, '')

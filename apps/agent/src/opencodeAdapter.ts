@@ -132,11 +132,12 @@ export class OpenCodeAdapter {
           .map((p: any) => p.text)
           .join('\n');
 
+        const hasCompactionPart = parts.some((p: any) => p.type === 'compaction');
         const isCompaction =
           info.mode === 'compaction' ||
           info.agent === 'compaction' ||
-          Boolean(info.summary) ||
-          parts.some((p: any) => p.type === 'compaction');
+          info.summary === true ||
+          hasCompactionPart;
 
         messages.push({
           id: info.id || `msg_${Date.now()}`,
@@ -145,7 +146,7 @@ export class OpenCodeAdapter {
           content: textContent || (parts[0]?.text ?? ''),
           createdAt: info.createdAt || Date.now(),
           isCompaction: Boolean(isCompaction),
-          summary: typeof info.summary === 'boolean' || (typeof info.summary === 'object' && info.summary !== null) ? info.summary : undefined,
+          summary: info.summary === true ? true : undefined,
           parts: parts.map((p: any) => ({
             id: p.id,
             type: p.type,

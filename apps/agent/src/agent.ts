@@ -361,6 +361,7 @@ export class RemoteAgent {
       },
       agentCredential: this.config.deviceCredential,
       deviceToken: this.config.deviceCredential,
+      requestPairingCode: true,
     });
 
     this.ws.send(JSON.stringify(hello));
