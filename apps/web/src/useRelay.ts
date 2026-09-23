@@ -29,6 +29,9 @@ import {
   type FsFindResultPayload,
   type FsReadResultPayload,
   type SessionInteractionMode,
+  type SessionGetResultPayload,
+  type SessionListResultPayload,
+  type QueuedMessage,
 } from '@opencode-remote/protocol';
 import { useMessageQueue } from './hooks/useMessageQueue';
 import { playSound } from './utils/audio';
@@ -91,7 +94,12 @@ export function useRelay(relayWsUrl?: string) {
   const [selectedModel, setSelectedModel] = useState<{ providerID: string; modelID: string } | null>(null);
 
   const [permissions, setPermissions] = useState<PermissionItem[]>([]);
+  const [sessionStatuses, setSessionStatuses] = useState<Record<string, string>>({});
   const fetchTodosRef = useRef<((deviceId: string, sessionId: string) => void) | null>(null);
+  const fetchSessionsRef = useRef<((deviceId: string) => Promise<any>) | null>(null);
+  const reconcileSessionRef = useRef<((deviceId: string, sessionId: string) => Promise<any>) | null>(null);
+  const syncQueueRef = useRef<(sessionId: string, queue: QueuedMessage[]) => void>(() => {});
+  const lastSequenceRef = useRef<Map<string, number>>(new Map());
 
   const [isLoadingSession, setIsLoadingSession] = useState<boolean>(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
@@ -141,6 +149,21 @@ export function useRelay(relayWsUrl?: string) {
     },
     []
   );
+
+  // Authoritative event sequence tracking & gap-triggered reconciliation
+  const handleEventSequence = useCallback((sessionId: string, seq?: number) => {
+    if (typeof seq !== 'number') return;
+    const last = lastSequenceRef.current.get(sessionId);
+    if (last !== undefined && seq > last + 1) {
+      console.warn(
+        `[useRelay] Event sequence gap detected for session ${sessionId}: expected ${last + 1}, received ${seq}. Triggering authoritative snapshot reconciliation.`
+      );
+      if (activeSessionRef.current?.session?.id === sessionId && selectedDeviceIdRef.current) {
+        reconcileSessionRef.current?.(selectedDeviceIdRef.current, sessionId);
+      }
+    }
+    lastSequenceRef.current.set(sessionId, seq);
+  }, []);
 
   // Derived active session execution state
   const currentActiveSessionId = activeSession?.session?.id;
@@ -320,6 +343,7 @@ export function useRelay(relayWsUrl?: string) {
 
       ws.onopen = () => {
         if (isUnmountedRef.current) return;
+        const wasReconnecting = reconnectAttemptRef.current > 0;
         reconnectAttemptRef.current = 0;
         setConnectionState('CONNECTED');
 
@@ -335,6 +359,14 @@ export function useRelay(relayWsUrl?: string) {
 
         // Request device status
         ws.send(JSON.stringify(createMessage('DEVICE_STATUS_REQUEST', {})));
+
+        // Proactively reconcile on reconnect
+        if (wasReconnecting && selectedDeviceIdRef.current) {
+          fetchSessionsRef.current?.(selectedDeviceIdRef.current);
+          if (activeSessionRef.current?.session?.id) {
+            reconcileSessionRef.current?.(selectedDeviceIdRef.current, activeSessionRef.current.session.id);
+          }
+        }
       };
 
       ws.onmessage = (event) => {
@@ -408,12 +440,18 @@ export function useRelay(relayWsUrl?: string) {
 
             case 'SESSION_LIST_RESULT': {
               setSessions(msg.payload.sessions);
+              if (msg.payload.statuses) {
+                setSessionStatuses(msg.payload.statuses);
+              }
               break;
             }
 
             case 'SESSION_GET_RESULT': {
-              const session = msg.payload.session;
-              const messages = msg.payload.messages;
+              const payload = msg.payload as SessionGetResultPayload;
+              const session = payload.session;
+              const rawMessages = payload.messages || [];
+              const runtime = payload.runtime;
+              const queue = payload.queue;
               if (!session) break;
 
               // Stale response guard: Ignore if user switched to another session while this was in flight
@@ -424,24 +462,75 @@ export function useRelay(relayWsUrl?: string) {
                 break;
               }
 
+              // Ingest authoritative session queue from Relay
+              if (queue && Array.isArray(queue)) {
+                syncQueueRef.current(session.id, queue);
+              }
+
+              const isStreaming = Boolean(runtime?.isStreaming || payload.isStreaming);
+              const activeMsgId = runtime?.activeMessageId || payload.activeMessageId;
+              const accumulatedText = runtime?.streamingText || payload.streamingText || '';
+              const parts = runtime?.parts || [];
+              const diffs = runtime?.diffs || payload.diffs || [];
+              const sessionTodos = runtime?.todos || payload.todos || [];
+
+              // Authoritative in-flight message hydration
+              let mergedMessages = [...rawMessages];
+              if (isStreaming && activeMsgId) {
+                const existingIdx = mergedMessages.findIndex((m) => m.id === activeMsgId);
+                if (existingIdx >= 0) {
+                  mergedMessages[existingIdx] = {
+                    ...mergedMessages[existingIdx],
+                    content: mergedMessages[existingIdx].content || accumulatedText,
+                    parts:
+                      mergedMessages[existingIdx].parts && mergedMessages[existingIdx].parts!.length > 0
+                        ? mergedMessages[existingIdx].parts
+                        : parts,
+                  };
+                } else {
+                  mergedMessages.push({
+                    id: activeMsgId,
+                    sessionId: session.id,
+                    role: 'assistant',
+                    content: accumulatedText,
+                    parts,
+                    createdAt: Date.now(),
+                  });
+                }
+              }
+
               setActiveSession({
                 session,
-                messages,
+                messages: mergedMessages,
               });
 
-              if (msg.payload.isStreaming) {
-                updateSessionRuntime(session.id, (prev) => ({
-                  ...prev,
-                  isStreaming: true,
-                  isWaitingForResponse: false,
-                  activeMessageId: msg.payload.activeMessageId || prev.activeMessageId,
-                  diffs: msg.payload.diffs || prev.diffs,
-                }));
-              } else if (msg.payload.diffs) {
-                updateSessionRuntime(session.id, (prev) => ({
-                  ...prev,
-                  diffs: msg.payload.diffs || prev.diffs,
-                }));
+              updateSessionRuntime(session.id, (prev) => ({
+                ...prev,
+                isStreaming,
+                isWaitingForResponse: false,
+                activeMessageId: activeMsgId || prev.activeMessageId,
+                streamingText: accumulatedText || prev.streamingText,
+                diffs: diffs.length > 0 ? diffs : prev.diffs,
+                todos: sessionTodos.length > 0 ? sessionTodos : prev.todos,
+              }));
+
+              // Ingest pending permission if present
+              if (runtime?.pendingPermission) {
+                const perm = runtime.pendingPermission;
+                setPermissions((prev) => [...prev.filter((p) => p.id !== perm.id), perm]);
+              }
+
+              // Update sequence anchor
+              if (typeof runtime?.lastEventSequence === 'number') {
+                lastSequenceRef.current.set(session.id, runtime.lastEventSequence);
+              }
+              break;
+            }
+
+            case 'SESSION_QUEUE_SYNC': {
+              const { sessionId, queue } = msg.payload;
+              if (sessionId && Array.isArray(queue)) {
+                syncQueueRef.current(sessionId, queue);
               }
               break;
             }
@@ -490,8 +579,10 @@ export function useRelay(relayWsUrl?: string) {
             }
 
             case 'MESSAGE_STARTED': {
-              const { sessionId, messageId, timestamp } = msg.payload;
+              const { sessionId, messageId, timestamp, sequence } = msg.payload;
               if (!sessionId) break;
+              handleEventSequence(sessionId, sequence);
+              setSessionStatuses((prev) => ({ ...prev, [sessionId]: 'busy' }));
 
               updateSessionRuntime(sessionId, (prev) => ({
                 ...prev,
@@ -537,8 +628,9 @@ export function useRelay(relayWsUrl?: string) {
             }
 
             case 'MESSAGE_DELTA': {
-              const { delta, messageId, sessionId } = msg.payload;
+              const { delta, messageId, sessionId, sequence } = msg.payload;
               if (!sessionId) break;
+              handleEventSequence(sessionId, sequence);
 
               let buf = sessionDeltaBuffersRef.current.get(sessionId);
               if (!buf) {
@@ -586,8 +678,10 @@ export function useRelay(relayWsUrl?: string) {
             }
 
             case 'MESSAGE_COMPLETED': {
-              const { sessionId, messageId, totalText } = msg.payload;
+              const { sessionId, messageId, totalText, sequence } = msg.payload;
               if (!sessionId) break;
+              handleEventSequence(sessionId, sequence);
+              setSessionStatuses((prev) => ({ ...prev, [sessionId]: 'idle' }));
 
               let flushedDelta = '';
               const buf = sessionDeltaBuffersRef.current.get(sessionId);
@@ -658,6 +752,7 @@ export function useRelay(relayWsUrl?: string) {
               const sessionId = props.sessionID || props.sessionId || evt.payload?.sessionID || evt.payload?.sessionId || evt.sessionID || props.part?.sessionID;
 
               if (sessionId) {
+                handleEventSequence(sessionId, (msg.payload as any)?.sequence);
                 updateSessionRuntime(sessionId, (prev) => ({
                   ...prev,
                   isWaitingForResponse: false,
@@ -755,12 +850,14 @@ export function useRelay(relayWsUrl?: string) {
               if (eventType === 'session.status' && sessionId) {
                 const statusType = props.status?.type;
                 if (statusType === 'busy') {
+                  setSessionStatuses((prev) => ({ ...prev, [sessionId]: 'busy' }));
                   updateSessionRuntime(sessionId, (prev) => ({
                     ...prev,
                     isStreaming: true,
                     isWaitingForResponse: false,
                   }));
                 } else if (statusType === 'idle') {
+                  setSessionStatuses((prev) => ({ ...prev, [sessionId]: 'idle' }));
                   updateSessionRuntime(sessionId, (prev) => ({
                     ...prev,
                     isStreaming: false,
@@ -770,6 +867,7 @@ export function useRelay(relayWsUrl?: string) {
               }
 
               if (eventType === 'session.idle' && sessionId) {
+                setSessionStatuses((prev) => ({ ...prev, [sessionId]: 'idle' }));
                 updateSessionRuntime(sessionId, (prev) => ({
                   ...prev,
                   isStreaming: false,
@@ -1023,8 +1121,11 @@ export function useRelay(relayWsUrl?: string) {
         deviceToken: token,
       });
       try {
-        const res = await sendRpc<{ sessions: OpenCodeSession[] }>(msg);
+        const res = await sendRpc<SessionListResultPayload>(msg);
         setSessions(res.sessions || []);
+        if (res.statuses) {
+          setSessionStatuses(res.statuses);
+        }
         return res.sessions;
       } catch (err: any) {
         if (!err.message?.includes('invalid or revoked')) {
@@ -1035,6 +1136,10 @@ export function useRelay(relayWsUrl?: string) {
     },
     [deviceTokens, sendRpc]
   );
+
+  useEffect(() => {
+    fetchSessionsRef.current = fetchSessions;
+  }, [fetchSessions]);
 
   const createSession = useCallback(
     async (deviceId: string, title?: string) => {
@@ -1116,6 +1221,10 @@ export function useRelay(relayWsUrl?: string) {
     [deviceTokens, sendRpc, fetchSessionDiff, fetchWorkspace, fetchTodos]
   );
 
+  useEffect(() => {
+    reconcileSessionRef.current = openSession;
+  }, [openSession]);
+
   const sendDirectMessage = useCallback(
     (
       deviceId: string,
@@ -1169,6 +1278,19 @@ export function useRelay(relayWsUrl?: string) {
     return map;
   }, [sessionRuntime]);
 
+  const handleQueueUpdate = useCallback((sessionId: string, newQueue: QueuedMessage[]) => {
+    if (!selectedDeviceRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const deviceId = selectedDeviceRef.current.deviceId;
+    const token = deviceTokensRef.current[deviceId];
+    const msg = createMessage('SESSION_QUEUE_UPDATE', {
+      deviceId,
+      sessionId,
+      queue: newQueue,
+      deviceToken: token,
+    });
+    wsRef.current.send(JSON.stringify(msg));
+  }, []);
+
   const {
     currentQueue: queuedMessages,
     editingItem: editingQueueItem,
@@ -1179,13 +1301,19 @@ export function useRelay(relayWsUrl?: string) {
     sendNow: sendQueuedMessageNow,
     retry: retryQueuedMessage,
     clear: clearQueue,
+    syncQueue,
   } = useMessageQueue({
     activeSessionId: activeSession?.session.id,
     selectedDeviceId: selectedDevice?.deviceId,
     isStreaming,
     sessionStreamingStatus,
     onSendMessage: sendDirectMessage,
+    onQueueUpdate: handleQueueUpdate,
   });
+
+  useEffect(() => {
+    syncQueueRef.current = syncQueue;
+  }, [syncQueue]);
 
   const sendMessage = useCallback(
     (
@@ -1667,6 +1795,7 @@ export function useRelay(relayWsUrl?: string) {
     selectedDeviceId,
     setSelectedDeviceId,
     sessions,
+    sessionStatuses,
     activeSession,
     projectContext,
     sessionDiffs,

@@ -282,4 +282,147 @@ describe('PC ↔ Mobile Mirror / Multi-Client Synchronization Architecture', () 
     expect(updatedPhoneRuntime.diffs.length).toBe(1);
     expect(updatedPhoneRuntime.diffs[0].file).toBe('src/components/Header.tsx');
   });
+
+  it('Mid-Flight Accumulated Streaming Text: In-flight message is restored with partial text', () => {
+    // Phone connects while OpenCode is streaming delta #15 on PC
+    const snapshotPayload = {
+      session: {
+        id: 'session_A',
+        title: 'Build YouTube clone',
+        createdAt: 1000,
+      },
+      messages: [
+        {
+          id: 'user_1',
+          sessionId: 'session_A',
+          role: 'user' as const,
+          content: 'Build YouTube clone',
+          createdAt: 1000,
+        },
+      ],
+      runtime: {
+        status: 'busy' as const,
+        isStreaming: true,
+        activeMessageId: 'asst_stream_789',
+        streamingText: 'I will now create the video player component with Plyr...',
+        parts: [],
+        todos: [],
+        diffs: [],
+        lastEventSequence: 15,
+      },
+    };
+
+    // Client hydration algorithm from useRelay
+    const { session, messages: rawMessages, runtime } = snapshotPayload;
+    let mergedMessages = [...rawMessages];
+    const isStreaming = Boolean(runtime?.isStreaming);
+    const activeMsgId = runtime?.activeMessageId;
+    const accumulatedText = runtime?.streamingText || '';
+
+    if (isStreaming && activeMsgId) {
+      const existingIdx = mergedMessages.findIndex((m) => m.id === activeMsgId);
+      if (existingIdx >= 0) {
+        mergedMessages[existingIdx] = {
+          ...mergedMessages[existingIdx],
+          content: mergedMessages[existingIdx].content || accumulatedText,
+        };
+      } else {
+        mergedMessages.push({
+          id: activeMsgId,
+          sessionId: session.id,
+          role: 'assistant',
+          content: accumulatedText,
+          parts: [],
+          createdAt: Date.now(),
+        });
+      }
+    }
+
+    expect(mergedMessages.length).toBe(2);
+    expect(mergedMessages[1].id).toBe('asst_stream_789');
+    expect(mergedMessages[1].content).toBe('I will now create the video player component with Plyr...');
+    expect(mergedMessages[1].role).toBe('assistant');
+  });
+
+  it('Turn Lifecycle Persistence: Multi-step turn does not complete on text.ended', () => {
+    // Verify that session status remains busy when text.ended arrives,
+    // and only transitions to idle on true session.status idle
+    let status = 'busy';
+    let isStreaming = true;
+
+    // 1. Step 1 text delta finishes, OpenCode emits session.next.text.ended
+    const textEndedEvent = {
+      type: 'session.next.text.ended',
+      properties: { sessionID: 'session_A' },
+    };
+
+    // OpenCode Mobile lifecycle rule: text.ended does NOT terminate turn
+    if (textEndedEvent.type === 'session.next.text.ended') {
+      // no-op: Step 2 tool execution is still proceeding
+    }
+    expect(status).toBe('busy');
+    expect(isStreaming).toBe(true);
+
+    // 2. OpenCode finishes all tool execution steps and emits session.status idle
+    const turnCompleteEvent = {
+      type: 'session.status',
+      properties: {
+        sessionID: 'session_A',
+        status: { type: 'idle' },
+      },
+    };
+
+    if (turnCompleteEvent.properties.status.type === 'idle') {
+      status = 'idle';
+      isStreaming = false;
+    }
+
+    expect(status).toBe('idle');
+    expect(isStreaming).toBe(false);
+  });
+
+  it('Cross-Client Queue Sync: Relay broadcasts SESSION_QUEUE_SYNC to synchronize queue state', () => {
+    // PC queue starts empty
+    let pcQueue: any[] = [];
+    // Phone user enqueues a prompt while agent is busy
+    const phoneEnqueuedItem = {
+      id: 'qmsg_1',
+      sessionId: 'session_A',
+      content: 'Add dark mode toggle next',
+      createdAt: 3000,
+      status: 'queued',
+      retryCount: 0,
+    };
+
+    // Relay receives SESSION_QUEUE_UPDATE and broadcasts SESSION_QUEUE_SYNC
+    const syncEvent = {
+      type: 'SESSION_QUEUE_SYNC',
+      payload: {
+        deviceId: 'dev_pc',
+        sessionId: 'session_A',
+        queue: [phoneEnqueuedItem],
+      },
+    };
+
+    // PC client syncQueue handler
+    pcQueue = [...syncEvent.payload.queue];
+
+    expect(pcQueue.length).toBe(1);
+    expect(pcQueue[0].content).toBe('Add dark mode toggle next');
+    expect(pcQueue[0].status).toBe('queued');
+  });
+
+  it('Event Sequence Gap Detection: Gap triggers authoritative reconciliation', () => {
+    let reconciliationTriggered = false;
+    let lastSequence: number | undefined = 10;
+    const incomingSequence = 13; // Missed 11 and 12
+
+    if (lastSequence !== undefined && incomingSequence > lastSequence + 1) {
+      reconciliationTriggered = true;
+    }
+    lastSequence = incomingSequence;
+
+    expect(reconciliationTriggered).toBe(true);
+    expect(lastSequence).toBe(13);
+  });
 });

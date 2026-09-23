@@ -8,6 +8,9 @@ import {
   type OpenCodeStatus,
   type TodoItem,
   type SnapshotFileDiff,
+  type PermissionItem,
+  type MessagePart,
+  type SessionRuntimeSnapshot,
 } from '@opencode-remote/protocol';
 import type { AgentConfig } from './config.js';
 import { OpenCodeDetector } from './opencode.js';
@@ -104,6 +107,36 @@ export class RemoteAgent {
   }
 
   private sessionTurns: Map<string, { messageId: string; startedEmitted: boolean; completedEmitted: boolean }> = new Map();
+  private sessionRuntimes: Map<string, {
+    sessionId: string;
+    status: 'idle' | 'busy' | 'error';
+    turnId?: string;
+    userMessageId?: string;
+    assistantMessageId?: string;
+    streamingText: string;
+    parts: MessagePart[];
+    todos: TodoItem[];
+    diffs: SnapshotFileDiff[];
+    pendingPermission?: PermissionItem;
+    lastEventSequence: number;
+  }> = new Map();
+
+  private getOrCreateRuntime(sessionId: string) {
+    let rt = this.sessionRuntimes.get(sessionId);
+    if (!rt) {
+      rt = {
+        sessionId,
+        status: 'idle',
+        streamingText: '',
+        parts: [],
+        todos: [],
+        diffs: [],
+        lastEventSequence: 0,
+      };
+      this.sessionRuntimes.set(sessionId, rt);
+    }
+    return rt;
+  }
 
   private getOrCreateTurn(sessionId: string, preferredMessageId?: string) {
     let turn = this.sessionTurns.get(sessionId);
@@ -122,7 +155,7 @@ export class RemoteAgent {
 
     const eventType = evt.type;
     const props = evt.properties || evt.data || {};
-    const sessionId = props.sessionID || evt.sessionID;
+    const sessionId = props.sessionID || evt.sessionID || props.part?.sessionID;
 
     if (!sessionId) {
       // Global/non-session event: broadcast raw event only
@@ -136,38 +169,40 @@ export class RemoteAgent {
       return;
     }
 
-    const incomingMessageId = props.assistantMessageID || props.messageID;
-    const turn = this.getOrCreateTurn(sessionId, incomingMessageId);
+    const rt = this.getOrCreateRuntime(sessionId);
+    rt.lastEventSequence = this.sequence;
 
+    const incomingMessageId = props.assistantMessageID || props.messageID;
+    if (incomingMessageId) {
+      rt.assistantMessageId = incomingMessageId;
+    }
+
+    const turn = this.getOrCreateTurn(sessionId, incomingMessageId);
     const currentMessageId = turn.messageId;
 
     // Helper to emit MESSAGE_STARTED exactly once per turn
     const ensureStarted = () => {
       if (!turn.startedEmitted) {
         turn.startedEmitted = true;
+        rt.status = 'busy';
+        rt.streamingText = '';
+        rt.parts = [];
         const msg = createMessage('MESSAGE_STARTED', {
           deviceId: this.config.deviceId,
           sessionId,
           messageId: currentMessageId,
           timestamp: Date.now(),
+          sequence: this.sequence++,
         });
         this.sendMessage(msg);
       }
     };
 
     // 1. Text streaming delta
-    if (eventType === 'session.next.text.delta' && props.delta) {
+    if ((eventType === 'session.next.text.delta' || eventType === 'session.text.delta' || eventType === 'message.part.delta') && props.delta) {
       ensureStarted();
-      const msg = createMessage('MESSAGE_DELTA', {
-        deviceId: this.config.deviceId,
-        sessionId,
-        messageId: currentMessageId,
-        delta: props.delta,
-        sequence: this.sequence++,
-      });
-      this.sendMessage(msg);
-    } else if (eventType === 'message.part.delta' && props.delta) {
-      ensureStarted();
+      rt.status = 'busy';
+      rt.streamingText += props.delta;
       const msg = createMessage('MESSAGE_DELTA', {
         deviceId: this.config.deviceId,
         sessionId,
@@ -181,28 +216,29 @@ export class RemoteAgent {
       eventType === 'session.next.step.started' ||
       eventType === 'session.step.started' ||
       eventType === 'session.next.reasoning.started' ||
-      eventType === 'session.next.tool.started'
+      eventType === 'session.next.tool.started' ||
+      (eventType === 'session.status' && props.status?.type === 'busy')
     ) {
       ensureStarted();
+      rt.status = 'busy';
     } else if (
       eventType === 'session.idle' ||
-      eventType === 'session.next.text.ended' ||
-      eventType === 'session.next.step.ended' ||
       (eventType === 'session.status' && props.status?.type === 'idle')
     ) {
-      // Complete turn ONLY if turn was actively started by a prompt
+      rt.status = 'idle';
+      // Complete turn ONLY when entire session is truly idle
       if (turn.startedEmitted && !turn.completedEmitted) {
         turn.completedEmitted = true;
         const msg = createMessage('MESSAGE_COMPLETED', {
           deviceId: this.config.deviceId,
           sessionId,
           messageId: currentMessageId,
-          totalText: props.text,
+          totalText: props.text || rt.streamingText,
           timestamp: Date.now(),
+          sequence: this.sequence++,
         });
         this.sendMessage(msg);
 
-        // Immediate cleanup so subsequent turns get a fresh turn object
         if (this.sessionTurns.get(sessionId) === turn) {
           this.sessionTurns.delete(sessionId);
         }
@@ -213,6 +249,7 @@ export class RemoteAgent {
         status: t.status || 'pending',
         priority: t.priority || 'medium',
       }));
+      rt.todos = todoItems;
       const msg = createMessage('TODO_UPDATED', {
         deviceId: this.config.deviceId,
         sessionId,
@@ -227,13 +264,45 @@ export class RemoteAgent {
         deletions: typeof d.deletions === 'number' ? d.deletions : 0,
         status: d.status,
       }));
+      rt.diffs = diffs;
       const msg = createMessage('SESSION_DIFF_UPDATED', {
         deviceId: this.config.deviceId,
         sessionId,
         diff: diffs,
       });
       this.sendMessage(msg);
+    } else if (eventType === 'permission.asked' || eventType === 'permission.v2.asked') {
+      const permItem: PermissionItem = {
+        id: props.id || props.requestID || props.requestId || `perm_${Date.now()}`,
+        title: props.title,
+        pattern: props.pattern,
+        command: props.command,
+        sessionID: sessionId,
+        time: props.time || Date.now(),
+      };
+      rt.pendingPermission = permItem;
+      const permMsg = createMessage('PERMISSION_REQUEST', {
+        ...permItem,
+        deviceId: this.config.deviceId,
+      } as any);
+      this.sendMessage(permMsg);
+    } else if (eventType === 'permission.replied' || eventType === 'permission.v2.replied') {
+      rt.pendingPermission = undefined;
+    } else if (
+      (eventType === 'message.part.updated' || eventType === 'message.part') &&
+      props.part
+    ) {
+      const p = props.part;
+      const pIdx = rt.parts.findIndex(
+        (existing) => existing.id === p.id || (p.callID && existing.callID === p.callID)
+      );
+      if (pIdx >= 0) {
+        rt.parts[pIdx] = { ...rt.parts[pIdx], ...p };
+      } else {
+        rt.parts.push(p);
+      }
     } else if (eventType === 'session.error') {
+      rt.status = 'error';
       const errorText =
         props.error?.data?.message ||
         props.error?.message ||
@@ -438,12 +507,24 @@ export class RemoteAgent {
         case 'SESSION_LIST': {
           try {
             const sessions = await this.adapter.listSessions();
+            let statuses: Record<string, { type: 'busy' | 'idle' }> = {};
+            try {
+              statuses = await this.adapter.getSessionStatuses();
+            } catch {}
+
+            for (const [sId, rt] of this.sessionRuntimes.entries()) {
+              if (rt.status === 'busy') {
+                statuses[sId] = { type: 'busy' };
+              }
+            }
+
             const res = createMessage(
               'SESSION_LIST_RESULT',
               {
                 deviceId: this.config.deviceId,
                 sessions,
-              },
+                statuses,
+              } as any,
               msg.id // Preserve requestId
             );
             this.sendMessage(res);
@@ -486,12 +567,22 @@ export class RemoteAgent {
         case 'SESSION_GET': {
           try {
             const { session, messages } = await this.adapter.getSession(msg.payload.sessionId);
+            const rt = this.getOrCreateRuntime(msg.payload.sessionId);
             const currentTurn = this.sessionTurns.get(msg.payload.sessionId);
-            const isStreaming = Boolean(currentTurn && currentTurn.startedEmitted && !currentTurn.completedEmitted);
+            const isStreaming = rt.status === 'busy' || Boolean(currentTurn && currentTurn.startedEmitted && !currentTurn.completedEmitted);
 
-            let diffs: SnapshotFileDiff[] | undefined;
             try {
-              diffs = await this.adapter.getSessionDiff(msg.payload.sessionId);
+              const diffs = await this.adapter.getSessionDiff(msg.payload.sessionId);
+              if (diffs && diffs.length > 0) {
+                rt.diffs = diffs;
+              }
+            } catch {}
+
+            try {
+              const todos = await this.adapter.getTodos(msg.payload.sessionId);
+              if (todos && todos.length > 0) {
+                rt.todos = todos;
+              }
             } catch {}
 
             const res = createMessage(
@@ -501,8 +592,21 @@ export class RemoteAgent {
                 session,
                 messages,
                 isStreaming,
-                activeMessageId: currentTurn?.messageId,
-                diffs,
+                activeMessageId: rt.assistantMessageId || currentTurn?.messageId,
+                streamingText: isStreaming ? rt.streamingText : undefined,
+                diffs: rt.diffs,
+                todos: rt.todos,
+                runtime: {
+                  status: isStreaming ? 'busy' : 'idle',
+                  isStreaming,
+                  activeMessageId: rt.assistantMessageId || currentTurn?.messageId,
+                  streamingText: isStreaming ? rt.streamingText : undefined,
+                  parts: rt.parts,
+                  todos: rt.todos,
+                  diffs: rt.diffs,
+                  pendingPermission: rt.pendingPermission,
+                  lastEventSequence: this.sequence,
+                },
               },
               msg.id
             );
@@ -576,6 +680,12 @@ export class RemoteAgent {
             // Mark turn active
             const turn = this.getOrCreateTurn(sessionId, messageId);
             turn.startedEmitted = true;
+            const rt = this.getOrCreateRuntime(sessionId);
+            rt.status = 'busy';
+            rt.userMessageId = messageId;
+            rt.streamingText = '';
+            rt.parts = [];
+
             this.sendMessage(
               createMessage('MESSAGE_STARTED', {
                 deviceId: this.config.deviceId,

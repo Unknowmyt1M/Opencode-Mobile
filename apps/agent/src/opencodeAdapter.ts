@@ -83,6 +83,34 @@ export class OpenCodeAdapter {
     }));
   }
 
+  async getSessionStatuses(): Promise<Record<string, { type: 'busy' | 'idle' }>> {
+    try {
+      const res = await fetch(`${this.baseUrl}/session/status`, {
+        headers: this.getHeaders(),
+      });
+      if (res.ok) {
+        return (await res.json()) as Record<string, { type: 'busy' | 'idle' }>;
+      }
+    } catch {}
+
+    try {
+      const res = await fetch(`${this.baseUrl}/api/session/active`, {
+        headers: this.getHeaders(),
+      });
+      if (res.ok) {
+        const json = (await res.json()) as any;
+        const activeMap: Record<string, { type: 'busy' | 'idle' }> = {};
+        const entries = json?.data || json || {};
+        for (const sId of Object.keys(entries)) {
+          activeMap[sId] = { type: 'busy' };
+        }
+        return activeMap;
+      }
+    } catch {}
+
+    return {};
+  }
+
   async createSession(title?: string): Promise<OpenCodeSession> {
     const body: Record<string, any> = {};
     if (title) body.title = title;

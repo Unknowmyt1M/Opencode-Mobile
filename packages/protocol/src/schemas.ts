@@ -363,6 +363,7 @@ export const SessionListResultMessageSchema = z.object({
   payload: z.object({
     deviceId: z.string().min(1).max(128),
     sessions: z.array(OpenCodeSessionSchema),
+    statuses: z.record(z.string(), z.string()).optional(),
   }),
 });
 
@@ -401,6 +402,52 @@ export const SessionGetMessageSchema = z.object({
   }),
 });
 
+export const PermissionItemSchema = z.object({
+  id: z.string(),
+  title: z.string().optional(),
+  pattern: z.string().optional(),
+  command: z.string().optional(),
+  sessionID: z.string().optional(),
+  time: z.number().optional(),
+});
+
+export const TodoItemSchema = z.object({
+  content: z.string(),
+  status: z.enum(['pending', 'in_progress', 'completed', 'cancelled']),
+  priority: z.enum(['high', 'medium', 'low']),
+});
+
+export const QueuedMessageSchema = z.object({
+  id: z.string().min(1).max(128),
+  sessionId: z.string().min(1).max(128),
+  content: z.string().min(1),
+  createdAt: z.number().int().positive(),
+  status: z.enum(['queued', 'sending', 'failed']),
+  model: z.object({
+    providerID: z.string(),
+    modelID: z.string(),
+  }).optional(),
+  retryCount: z.number().int().nonnegative().optional(),
+  error: z.string().optional(),
+});
+
+export const SessionRuntimeSnapshotSchema = z.object({
+  status: z.enum(['idle', 'busy', 'error']),
+  isStreaming: z.boolean(),
+  activeMessageId: z.string().optional(),
+  streamingText: z.string().optional(),
+  parts: z.array(MessagePartSchema).optional(),
+  todos: z.array(TodoItemSchema).optional(),
+  diffs: z.array(SnapshotFileDiffSchema).optional(),
+  pendingPermission: PermissionItemSchema.optional(),
+  pendingQuestion: z.object({
+    requestId: z.string(),
+    sessionId: z.string(),
+    questions: z.array(z.unknown()).optional(),
+  }).optional(),
+  lastEventSequence: z.number().optional(),
+});
+
 export const SessionGetResultMessageSchema = z.object({
   id: z.string().min(1).max(64),
   type: z.literal('SESSION_GET_RESULT'),
@@ -412,7 +459,36 @@ export const SessionGetResultMessageSchema = z.object({
     messages: z.array(SessionMessageSchema),
     isStreaming: z.boolean().optional(),
     activeMessageId: z.string().optional(),
+    streamingText: z.string().optional(),
     diffs: z.array(SnapshotFileDiffSchema).optional(),
+    todos: z.array(TodoItemSchema).optional(),
+    runtime: SessionRuntimeSnapshotSchema.optional(),
+    queue: z.array(QueuedMessageSchema).optional(),
+  }),
+});
+
+export const SessionQueueUpdateMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_QUEUE_UPDATE'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    queue: z.array(QueuedMessageSchema),
+    deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const SessionQueueSyncMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_QUEUE_SYNC'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    queue: z.array(QueuedMessageSchema),
   }),
 });
 
@@ -532,6 +608,7 @@ export const MessageStartedMessageSchema = z.object({
     sessionId: z.string().min(1).max(128),
     messageId: z.string().min(1).max(128),
     timestamp: z.number().int().positive(),
+    sequence: z.number().int().nonnegative().optional(),
   }),
 });
 
@@ -560,6 +637,7 @@ export const MessageCompletedMessageSchema = z.object({
     messageId: z.string().min(1).max(128),
     totalText: z.string().optional(),
     timestamp: z.number().int().positive(),
+    sequence: z.number().int().nonnegative().optional(),
   }),
 });
 
@@ -573,6 +651,7 @@ export const MessageErrorMessageSchema = z.object({
     sessionId: z.string().min(1).max(128),
     messageId: z.string().max(128).optional(),
     error: z.string().max(1024),
+    sequence: z.number().int().nonnegative().optional(),
   }),
 });
 
@@ -856,14 +935,6 @@ export const ModelListResultMessageSchema = z.object({
 // ==========================================
 // Phase 3 Redesign: Permissions Schemas
 // ==========================================
-export const PermissionItemSchema = z.object({
-  id: z.string(),
-  title: z.string().optional(),
-  pattern: z.string().optional(),
-  command: z.string().optional(),
-  sessionID: z.string().optional(),
-  time: z.number().optional(),
-});
 
 export const PermissionListMessageSchema = z.object({
   id: z.string().min(1).max(64),
@@ -974,11 +1045,6 @@ export const ErrorMessageSchema = z.object({
 });
 
 // Phase 3 Redesign: Todo & Diff Real-Time Schemas
-export const TodoItemSchema = z.object({
-  content: z.string(),
-  status: z.enum(['pending', 'in_progress', 'completed', 'cancelled']),
-  priority: z.enum(['high', 'medium', 'low']),
-});
 
 export const TodoListRequestMessageSchema = z.object({
   id: z.string().min(1).max(64),
@@ -1192,6 +1258,9 @@ export const MessageSchema = z.discriminatedUnion('type', [
   FsFindResultMessageSchema,
   FsReadMessageSchema,
   FsReadResultMessageSchema,
+  // Queue Synchronization
+  SessionQueueUpdateMessageSchema,
+  SessionQueueSyncMessageSchema,
   // Infra
   PingMessageSchema,
   PongMessageSchema,

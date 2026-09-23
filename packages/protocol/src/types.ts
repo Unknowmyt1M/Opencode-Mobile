@@ -265,6 +265,7 @@ export interface SessionListPayload {
 export interface SessionListResultPayload {
   deviceId: string;
   sessions: OpenCodeSession[];
+  statuses?: Record<string, string>;
 }
 
 export interface SessionCreatePayload {
@@ -276,6 +277,32 @@ export interface SessionCreatePayload {
 export interface SessionCreateResultPayload {
   deviceId: string;
   session: OpenCodeSession;
+}
+
+export type QueuedMessageStatus = 'queued' | 'sending' | 'failed';
+
+export interface QueuedMessage {
+  id: string;
+  sessionId: string;
+  content: string;
+  createdAt: number;
+  status: QueuedMessageStatus;
+  model?: { providerID: string; modelID: string };
+  retryCount?: number;
+  error?: string;
+}
+
+export interface SessionRuntimeSnapshot {
+  status: 'idle' | 'busy' | 'error';
+  isStreaming: boolean;
+  activeMessageId?: string;
+  streamingText?: string;
+  parts?: MessagePart[];
+  todos?: TodoItem[];
+  diffs?: SnapshotFileDiff[];
+  pendingPermission?: PermissionItem;
+  pendingQuestion?: { requestId: string; sessionId: string; questions?: unknown[] };
+  lastEventSequence?: number;
 }
 
 export interface SessionGetPayload {
@@ -290,7 +317,24 @@ export interface SessionGetResultPayload {
   messages: SessionMessage[];
   isStreaming?: boolean;
   activeMessageId?: string;
+  streamingText?: string;
   diffs?: SnapshotFileDiff[];
+  todos?: TodoItem[];
+  runtime?: SessionRuntimeSnapshot;
+  queue?: QueuedMessage[];
+}
+
+export interface SessionQueueUpdatePayload {
+  deviceId: string;
+  sessionId: string;
+  queue: QueuedMessage[];
+  deviceToken?: string;
+}
+
+export interface SessionQueueSyncPayload {
+  deviceId: string;
+  sessionId: string;
+  queue: QueuedMessage[];
 }
 
 export interface SessionSubscribePayload {
@@ -331,6 +375,7 @@ export interface MessageStartedPayload {
   sessionId: string;
   messageId: string;
   timestamp: number;
+  sequence?: number;
 }
 
 export interface MessageDeltaPayload {
@@ -347,6 +392,7 @@ export interface MessageCompletedPayload {
   messageId: string;
   totalText?: string;
   timestamp: number;
+  sequence?: number;
 }
 
 export interface MessageErrorPayload {
@@ -354,6 +400,7 @@ export interface MessageErrorPayload {
   sessionId: string;
   messageId?: string;
   error: string;
+  sequence?: number;
 }
 
 export interface OpenCodeEventPayload {

@@ -51,6 +51,7 @@ export default function App() {
     pairDevice,
     revokeDevice,
     fetchSessions,
+    sessionStatuses,
     createSession,
     openSession,
     sendMessage,
@@ -122,7 +123,10 @@ export default function App() {
     if (selectedDevice?.paired && selectedDevice?.opencodeStatus === 'connected') {
       fetchSessions(selectedDevice.deviceId).then((loadedSessions) => {
         if (!activeSessionRef.current && loadedSessions && loadedSessions.length > 0) {
-          openSession(selectedDevice.deviceId, loadedSessions[0].id);
+          // If any session is currently busy/streaming on PC, mirror that session first!
+          const busySession = loadedSessions.find((s) => sessionStatuses[s.id] === 'busy');
+          const targetSession = busySession || loadedSessions[0];
+          openSession(selectedDevice.deviceId, targetSession.id);
         }
       });
       fetchModels();

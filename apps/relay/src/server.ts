@@ -6,6 +6,7 @@ import {
   parseProtocolMessage,
   createMessage,
   type ProtocolMessage,
+  type QueuedMessage,
 } from '@opencode-remote/protocol';
 import { DeviceRegistry } from './registry.js';
 import { RelayStore } from './store.js';
@@ -53,6 +54,8 @@ export function buildRelayServer(options: RelayOptions = {}): {
   app.get('/api/devices', async () => ({
     devices: registry.getAllMergedDevices(store.getAllPersistedDevices()),
   }));
+
+  const sessionQueues = new Map<string, QueuedMessage[]>();
 
   app.register(async function (fastify) {
     fastify.get('/ws', { websocket: true }, (socket: WebSocket) => {
@@ -534,6 +537,13 @@ export function buildRelayServer(options: RelayOptions = {}): {
             }
 
             case 'SESSION_GET_RESULT': {
+              const { deviceId, session } = message.payload || {};
+              if (deviceId && session?.id) {
+                const q = sessionQueues.get(`${deviceId}:${session.id}`);
+                if (q) {
+                  message.payload.queue = q;
+                }
+              }
               const clientSocket = requestToClient.get(message.id);
               if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
                 clientSocket.send(JSON.stringify(message));
@@ -732,6 +742,38 @@ export function buildRelayServer(options: RelayOptions = {}): {
             }
 
             // PTY Management & I/O
+            case 'SESSION_QUEUE_UPDATE': {
+              const { deviceId, sessionId, queue, deviceToken } = message.payload;
+              if (!store.verifyDeviceToken(deviceId, deviceToken)) {
+                socket.send(
+                  JSON.stringify(
+                    createMessage('ERROR', {
+                      code: 'DEVICE_NOT_AUTHORIZED',
+                      message: 'Access denied: invalid or revoked device token',
+                      requestId: message.id,
+                    })
+                  )
+                );
+                return;
+              }
+
+              ensureClientAuthorized(deviceId, deviceToken);
+              sessionQueues.set(`${deviceId}:${sessionId}`, queue);
+
+              // Broadcast synchronized queue state to all authorized clients of this device
+              const syncMsg = createMessage('SESSION_QUEUE_SYNC', {
+                deviceId,
+                sessionId,
+                queue,
+              });
+              registry.broadcastToAuthorizedClients(
+                deviceId,
+                syncMsg,
+                (devId, tok) => store.verifyDeviceToken(devId, tok)
+              );
+              break;
+            }
+
             case 'PTY_CREATE':
             case 'PTY_LIST':
             case 'SESSION_ABORT':

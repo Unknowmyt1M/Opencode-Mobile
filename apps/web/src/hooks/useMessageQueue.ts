@@ -45,6 +45,7 @@ interface UseMessageQueueOptions {
     content: string,
     model?: { providerID: string; modelID: string }
   ) => Promise<void> | void;
+  onQueueUpdate?: (sessionId: string, queue: QueuedMessage[]) => void;
 }
 
 export function useMessageQueue({
@@ -53,9 +54,13 @@ export function useMessageQueue({
   isStreaming = false,
   sessionStreamingStatus,
   onSendMessage,
+  onQueueUpdate,
 }: UseMessageQueueOptions) {
   const [queues, setQueues] = useState<Record<string, QueuedMessage[]>>(loadQueuesFromStorage);
   const [editingItem, setEditingItem] = useState<{ id: string; sessionId: string; content: string } | null>(null);
+
+  const onQueueUpdateRef = useRef(onQueueUpdate);
+  onQueueUpdateRef.current = onQueueUpdate;
 
   // Per-session dispatch mutexes to prevent concurrent duplicates per session
   const dispatchingSessionsRef = useRef<Set<string>>(new Set());
@@ -68,6 +73,28 @@ export function useMessageQueue({
 
   // Current session's queue
   const currentQueue = activeSessionId ? queues[activeSessionId] || [] : [];
+
+  // Sync external queue from backend / peer clients without triggering local broadcast loop
+  const syncQueue = useCallback((sessionId: string, newQueue: QueuedMessage[]) => {
+    setQueues((prev) => {
+      const curr = prev[sessionId] || [];
+      if (
+        curr.length === newQueue.length &&
+        curr.every(
+          (m, idx) =>
+            m.id === newQueue[idx]?.id &&
+            m.content === newQueue[idx]?.content &&
+            m.status === newQueue[idx]?.status
+        )
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [sessionId]: newQueue,
+      };
+    });
+  }, []);
 
   // Enqueue a message
   const enqueue = useCallback(
@@ -89,9 +116,11 @@ export function useMessageQueue({
 
       setQueues((prev) => {
         const existing = prev[sessionId] || [];
+        const updated = [...existing, item];
+        onQueueUpdateRef.current?.(sessionId, updated);
         return {
           ...prev,
-          [sessionId]: [...existing, item],
+          [sessionId]: updated,
         };
       });
 
@@ -106,9 +135,11 @@ export function useMessageQueue({
     if (!clean) return;
     setQueues((prev) => {
       const existing = prev[sessionId] || [];
+      const updated = existing.map((m) => (m.id === id ? { ...m, content: clean } : m));
+      onQueueUpdateRef.current?.(sessionId, updated);
       return {
         ...prev,
-        [sessionId]: existing.map((m) => (m.id === id ? { ...m, content: clean } : m)),
+        [sessionId]: updated,
       };
     });
     setEditingItem((curr) => (curr?.id === id ? null : curr));
@@ -119,6 +150,7 @@ export function useMessageQueue({
     setQueues((prev) => {
       const existing = prev[sessionId] || [];
       const filtered = existing.filter((m) => m.id !== id);
+      onQueueUpdateRef.current?.(sessionId, filtered);
       const updated = { ...prev };
       if (filtered.length === 0) {
         delete updated[sessionId];
@@ -148,9 +180,11 @@ export function useMessageQueue({
           setQueues((prev) => {
             const list = [...(prev[sessionId] || [])];
             const [target] = list.splice(itemIndex, 1);
+            const reordered = [target, ...list];
+            onQueueUpdateRef.current?.(sessionId, reordered);
             return {
               ...prev,
-              [sessionId]: [target, ...list],
+              [sessionId]: reordered,
             };
           });
         }
@@ -162,22 +196,30 @@ export function useMessageQueue({
       dispatchingSessionsRef.current.add(sessionId);
 
       try {
-        setQueues((prev) => ({
-          ...prev,
-          [sessionId]: (prev[sessionId] || []).map((m) =>
-            m.id === id ? { ...m, status: 'sending' } : m
-          ),
-        }));
+        setQueues((prev) => {
+          const updated = (prev[sessionId] || []).map((m) =>
+            m.id === id ? { ...m, status: 'sending' as const } : m
+          );
+          onQueueUpdateRef.current?.(sessionId, updated);
+          return {
+            ...prev,
+            [sessionId]: updated,
+          };
+        });
 
         await onSendMessage(selectedDeviceId, sessionId, item.content, item.model);
         remove(sessionId, id);
       } catch (err: any) {
-        setQueues((prev) => ({
-          ...prev,
-          [sessionId]: (prev[sessionId] || []).map((m) =>
-            m.id === id ? { ...m, status: 'failed', error: err.message || 'Send failed' } : m
-          ),
-        }));
+        setQueues((prev) => {
+          const updated = (prev[sessionId] || []).map((m) =>
+            m.id === id ? { ...m, status: 'failed' as const, error: err.message || 'Send failed' } : m
+          );
+          onQueueUpdateRef.current?.(sessionId, updated);
+          return {
+            ...prev,
+            [sessionId]: updated,
+          };
+        });
       } finally {
         dispatchingSessionsRef.current.delete(sessionId);
       }
@@ -188,12 +230,16 @@ export function useMessageQueue({
   // Retry a failed message
   const retry = useCallback(
     async (sessionId: string, id: string) => {
-      setQueues((prev) => ({
-        ...prev,
-        [sessionId]: (prev[sessionId] || []).map((m) =>
-          m.id === id ? { ...m, status: 'queued', error: undefined, retryCount: (m.retryCount || 0) + 1 } : m
-        ),
-      }));
+      setQueues((prev) => {
+        const updated = (prev[sessionId] || []).map((m) =>
+          m.id === id ? { ...m, status: 'queued' as const, error: undefined, retryCount: (m.retryCount || 0) + 1 } : m
+        );
+        onQueueUpdateRef.current?.(sessionId, updated);
+        return {
+          ...prev,
+          [sessionId]: updated,
+        };
+      });
 
       if (!isStreaming) {
         await sendNow(sessionId, id);
@@ -207,6 +253,7 @@ export function useMessageQueue({
     setQueues((prev) => {
       const updated = { ...prev };
       delete updated[sessionId];
+      onQueueUpdateRef.current?.(sessionId, []);
       return updated;
     });
     setEditingItem(null);
@@ -291,5 +338,6 @@ export function useMessageQueue({
     sendNow,
     retry,
     clear,
+    syncQueue,
   };
 }
