@@ -101,6 +101,7 @@ export default function App() {
 
   // Right pane tab on desktop (review, terminal, activity, files)
   const [rightPanelTab, setRightPanelTab] = useState<'review' | 'terminal' | 'activity' | 'files'>('review');
+  const [showRightPanel, setShowRightPanel] = useState<boolean>(true);
   const [newSessionTitle, setNewSessionTitle] = useState('');
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [showTelemetryModal, setShowTelemetryModal] = useState(false);
@@ -327,7 +328,11 @@ export default function App() {
           <div className="p-3 border-t border-slate-800/80 bg-slate-950/60 flex items-center justify-between text-xs text-slate-400">
             <button
               type="button"
-              onClick={() => createPty('PowerShell')}
+              onClick={() => {
+                createPty('PowerShell');
+                setRightPanelTab('terminal');
+                setShowRightPanel(true);
+              }}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 hover:text-slate-200 transition-colors cursor-pointer border border-slate-800"
             >
               <TerminalIcon className="w-3.5 h-3.5 text-indigo-400" />
@@ -358,7 +363,10 @@ export default function App() {
               onSelectDiffFile={(file) => {
                 setActiveDiffFile(file);
                 setRightPanelTab('review');
+                setShowRightPanel(true);
               }}
+              showRightPanel={showRightPanel}
+              onToggleRightPanel={() => setShowRightPanel((prev) => !prev)}
               onSendMessage={(content) =>
                 sendMessage(
                   selectedDevice.deviceId,
@@ -470,128 +478,139 @@ export default function App() {
         </main>
 
         {/* Pane 3: Right Panel (Review Surface / Interactive PTY / Timeline) */}
-        <section className="w-96 xl:w-[480px] shrink-0 bg-[#090d16] flex flex-col overflow-hidden">
-          {/* Header Tab Bar */}
-          <div className="flex items-center justify-between px-3 py-2 bg-slate-900/90 border-b border-slate-800 text-xs">
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setRightPanelTab('review')}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-medium transition-all ${
-                  rightPanelTab === 'review'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-                }`}
-              >
-                <FileCheck2 className="w-3.5 h-3.5" />
-                <span>Review</span>
-                {sessionDiffs.length > 0 && (
-                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-800 text-indigo-300 font-mono">
-                    {sessionDiffs.length}
-                  </span>
-                )}
-              </button>
+        {showRightPanel && (
+          <section className="w-80 xl:w-96 shrink-0 bg-[#090d16] flex flex-col overflow-hidden border-l border-slate-800/80">
+            {/* Header Tab Bar */}
+            <div className="flex items-center justify-between px-3 py-2 bg-slate-900/90 border-b border-slate-800 text-xs">
+              <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+                <button
+                  type="button"
+                  onClick={() => setRightPanelTab('review')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-medium transition-all ${
+                    rightPanelTab === 'review'
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  }`}
+                >
+                  <FileCheck2 className="w-3.5 h-3.5" />
+                  <span>Review</span>
+                  {sessionDiffs.length > 0 && (
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-800 text-indigo-300 font-mono">
+                      {sessionDiffs.length}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setRightPanelTab('terminal')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-medium transition-all ${
+                    rightPanelTab === 'terminal'
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  }`}
+                >
+                  <TerminalIcon className="w-3.5 h-3.5" />
+                  <span>Terminal</span>
+                  {ptys.length > 0 && (
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-800 text-indigo-300 font-mono">
+                      {ptys.length}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setRightPanelTab('files')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-medium transition-all ${
+                    rightPanelTab === 'files'
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  }`}
+                >
+                  <Folder className="w-3.5 h-3.5" />
+                  <span>Files</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setRightPanelTab('activity')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-medium transition-all ${
+                    rightPanelTab === 'activity'
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  }`}
+                >
+                  <Activity className="w-3.5 h-3.5" />
+                  <span>Timeline</span>
+                </button>
+              </div>
 
               <button
                 type="button"
-                onClick={() => setRightPanelTab('terminal')}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-medium transition-all ${
-                  rightPanelTab === 'terminal'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-                }`}
+                onClick={() => setShowRightPanel(false)}
+                className="p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors ml-1 cursor-pointer"
+                title="Collapse panel"
               >
-                <TerminalIcon className="w-3.5 h-3.5" />
-                <span>Terminal</span>
-                {ptys.length > 0 && (
-                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-800 text-indigo-300 font-mono">
-                    {ptys.length}
-                  </span>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setRightPanelTab('files')}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-medium transition-all ${
-                  rightPanelTab === 'files'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-                }`}
-              >
-                <Folder className="w-3.5 h-3.5" />
-                <span>Files</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setRightPanelTab('activity')}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-medium transition-all ${
-                  rightPanelTab === 'activity'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-                }`}
-              >
-                <Activity className="w-3.5 h-3.5" />
-                <span>Timeline</span>
+                <X className="w-4 h-4" />
               </button>
             </div>
-          </div>
 
-          {/* Panel Content */}
-          <div className="flex-1 overflow-hidden">
-            {rightPanelTab === 'files' && (
-              <FileTreeExplorer
-                onListFs={listFs}
-                onFindFs={findFs}
-                onReadFs={readFs}
-              />
-            )}
+            {/* Panel Content */}
+            <div className="flex-1 overflow-hidden">
+              {rightPanelTab === 'files' && (
+                <FileTreeExplorer
+                  onListFs={listFs}
+                  onFindFs={findFs}
+                  onReadFs={readFs}
+                />
+              )}
 
-            {rightPanelTab === 'review' && (
-              <ReviewView
-                diffs={sessionDiffs}
-                activeFile={activeDiffFile}
-                onSelectFile={setActiveDiffFile}
-                onRefresh={() => {
-                  if (selectedDevice && activeSession) {
-                    fetchSessionDiff(selectedDevice.deviceId, activeSession.session.id);
-                  }
-                }}
-              />
-            )}
+              {rightPanelTab === 'review' && (
+                <ReviewView
+                  diffs={sessionDiffs}
+                  activeFile={activeDiffFile}
+                  onSelectFile={setActiveDiffFile}
+                  onRefresh={() => {
+                    if (selectedDevice && activeSession) {
+                      fetchSessionDiff(selectedDevice.deviceId, activeSession.session.id);
+                    }
+                  }}
+                />
+              )}
 
-            {rightPanelTab === 'terminal' && (
-              <XtermTerminal
-                ptys={ptys}
-                activePtyId={activePtyId}
-                onSelectPty={setActivePtyId}
-                onCreatePty={createPty}
-                onClosePty={closePty}
-                onSendInput={sendPtyInput}
-                onResize={resizePty}
-                subscribeData={subscribePtyData}
-                onRefresh={fetchPtys}
-              />
-            )}
+              {rightPanelTab === 'terminal' && (
+                <XtermTerminal
+                  ptys={ptys}
+                  activePtyId={activePtyId}
+                  onSelectPty={setActivePtyId}
+                  onCreatePty={createPty}
+                  onClosePty={closePty}
+                  onSendInput={sendPtyInput}
+                  onResize={resizePty}
+                  subscribeData={subscribePtyData}
+                  onRefresh={fetchPtys}
+                />
+              )}
 
-            {rightPanelTab === 'activity' && (
-              <div className="p-4 space-y-4 overflow-y-auto h-full">
-                {activeSession ? (
-                  normalizeConversationTurns(activeSession.messages)
-                    .filter((t: TurnGroup) => t.agentRun.hasActiveWork)
-                    .map((t: TurnGroup) => (
-                      <div key={t.id} className="p-3 bg-slate-900/50 rounded-xl border border-slate-800/80">
-                        <AgentWorkTimeline turn={t} defaultExpanded={true} onSelectDiffFile={setActiveDiffFile} />
-                      </div>
-                    ))
-                ) : (
-                  <div className="p-8 text-center text-slate-500 text-xs">No active timeline</div>
-                )}
-              </div>
-            )}
-          </div>
-        </section>
+              {rightPanelTab === 'activity' && (
+                <div className="p-4 space-y-4 overflow-y-auto h-full">
+                  {activeSession ? (
+                    normalizeConversationTurns(activeSession.messages)
+                      .filter((t: TurnGroup) => t.agentRun.hasActiveWork)
+                      .map((t: TurnGroup) => (
+                        <div key={t.id} className="p-3 bg-slate-900/50 rounded-xl border border-slate-800/80">
+                          <AgentWorkTimeline turn={t} defaultExpanded={true} onSelectDiffFile={setActiveDiffFile} />
+                        </div>
+                      ))
+                  ) : (
+                    <div className="p-8 text-center text-slate-500 text-xs">No active timeline</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
       </div>
 
       {/* =========================================================================

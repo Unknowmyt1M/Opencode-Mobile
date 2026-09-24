@@ -325,7 +325,7 @@ export const Composer: React.FC<ComposerProps> = ({
   };
 
   return (
-    <div className="flex flex-col bg-slate-900/95 border-t border-slate-800/90 backdrop-blur-md shrink-0 relative z-30 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+    <div className="flex flex-col w-full shrink-0 relative z-30">
       {/* Editing Queued Message Banner */}
       {editingItem && (
         <div className="px-3.5 py-1.5 bg-indigo-950/70 border-b border-indigo-800/50 flex items-center justify-between text-xs animate-in fade-in duration-150">

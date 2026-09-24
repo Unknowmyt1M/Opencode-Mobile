@@ -8,6 +8,7 @@ import {
   Sparkles,
   ChevronDown,
   Folder,
+  PanelRight,
 } from 'lucide-react';
 import type {
   OpenCodeSession,
@@ -314,6 +315,8 @@ interface ConversationViewProps {
   onFindFs?: (query: string) => Promise<FsEntry[]>;
   onReadFs?: (path: string) => Promise<{ content: string; mime?: string } | null>;
   onQueueMessage?: (text: string) => void;
+  showRightPanel?: boolean;
+  onToggleRightPanel?: () => void;
 }
 
 export const ConversationView: React.FC<ConversationViewProps> = ({
@@ -369,6 +372,8 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   onFindFs,
   onReadFs,
   onQueueMessage,
+  showRightPanel = true,
+  onToggleRightPanel,
 }) => {
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [composerMentions, setComposerMentions] = useState<ContextMention[]>([]);
@@ -452,7 +457,7 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
     <div className="flex flex-col h-full w-full bg-[#0b0f19] text-slate-200 overflow-hidden font-sans min-h-0">
       {/* Session Top Bar */}
       <header className="shrink-0 backdrop-blur-md bg-slate-900/90 border-b border-slate-800 px-4 py-2.5 z-20">
-        <div className="flex items-center justify-between">
+        <div className="max-w-4xl mx-auto w-full flex items-center justify-between">
           <div className="flex items-center gap-2.5 min-w-0">
             <button
               type="button"
@@ -484,6 +489,21 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                 <Sparkles className="w-3 h-3" />
                 <span>Working</span>
               </span>
+            )}
+            {hideTabs && onToggleRightPanel && (
+              <button
+                type="button"
+                onClick={onToggleRightPanel}
+                title={showRightPanel ? 'Hide auxiliary panel' : 'Show auxiliary panel'}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
+                  showRightPanel
+                    ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300 hover:bg-indigo-600/30'
+                    : 'bg-slate-800/80 border-slate-700/60 text-slate-400 hover:text-slate-200 hover:bg-slate-700'
+                }`}
+              >
+                <PanelRight className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{showRightPanel ? 'Hide Panel' : 'Show Panel'}</span>
+              </button>
             )}
           </div>
         </div>
@@ -528,73 +548,75 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
           <div
             ref={chatScrollRef}
             onScroll={handleScroll}
-            className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-4 space-y-3"
+            className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-4"
           >
-            {conversationTurns.length === 0 && !streamingText && (
-              <div className="flex flex-col items-center justify-center text-center text-slate-500 p-2 sm:p-6 space-y-3 max-w-md mx-auto my-auto py-2">
-                <div className="w-12 h-12 rounded-2xl bg-indigo-950/40 border border-indigo-500/30 text-indigo-400 flex items-center justify-center shadow-lg shadow-indigo-950/50">
-                  <Sparkles className="w-6 h-6" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-200">Ready to code</h3>
-                  <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                    Ask OpenCode to build features, inspect repo diffs, run commands, or explore architecture.
-                  </p>
-                </div>
+            <div className="max-w-3xl mx-auto w-full space-y-3">
+              {conversationTurns.length === 0 && !streamingText && (
+                <div className="flex flex-col items-center justify-center text-center text-slate-500 p-2 sm:p-6 space-y-3 max-w-md mx-auto my-auto py-2">
+                  <div className="w-12 h-12 rounded-2xl bg-indigo-950/40 border border-indigo-500/30 text-indigo-400 flex items-center justify-center shadow-lg shadow-indigo-950/50">
+                    <Sparkles className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-200">Ready to code</h3>
+                    <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                      Ask OpenCode to build features, inspect repo diffs, run commands, or explore architecture.
+                    </p>
+                  </div>
 
-                {/* Quick Starter Action Chips */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full pt-1">
-                  {[
-                    { label: 'Explain project architecture', icon: '🔍', prompt: 'Explain the project architecture, directory structure, and main workflows.' },
-                    { label: 'Run test suite', icon: '🧪', prompt: 'Run the test suite and report any failing tests or errors.' },
-                    { label: 'Review git diff & status', icon: '📝', prompt: 'Inspect current git status and summarize modified or unstaged files.' },
-                    { label: 'Find potential optimizations', icon: '⚡', prompt: 'Audit the codebase for potential performance bottlenecks or optimizations.' },
-                  ].map((chip) => (
-                    <button
-                      key={chip.label}
-                      type="button"
-                      onClick={() => onSendMessage(chip.prompt)}
-                      className="p-2.5 rounded-xl bg-slate-900/80 hover:bg-slate-850 border border-slate-800 hover:border-indigo-500/40 text-left transition-all group cursor-pointer shadow-sm active:scale-98"
-                    >
-                      <div className="flex items-center gap-2 text-xs font-medium text-slate-300 group-hover:text-white">
-                        <span className="text-sm">{chip.icon}</span>
-                        <span className="truncate">{chip.label}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {conversationTurns.map((turn, turnIdx) => (
-              <TurnItem
-                key={turn.id}
-                turn={turn}
-                isLastTurn={turnIdx === conversationTurns.length - 1}
-                isStreaming={isStreaming}
-                isWaitingForResponse={isWaitingForResponse}
-                onSelectDiffFile={onSelectDiffFile}
-                onSelectTab={onSelectTab}
-                onReplyQuestion={onReplyQuestion}
-              />
-            ))}
-
-            {/* Immediate Thinking Feedback if user prompt has been sent and waiting for agent */}
-            {isWaitingForResponse &&
-              (!conversationTurns.length ||
-                Boolean(conversationTurns[conversationTurns.length - 1].finalResponse)) && (
-                <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-indigo-950/30 border border-indigo-500/20 text-indigo-300 text-xs font-mono shadow-sm animate-pulse max-w-xs mt-1">
-                  <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-spin shrink-0" />
-                  <span className="font-medium text-slate-200">OpenCode is thinking...</span>
-                  <span className="flex gap-1 ml-auto shrink-0">
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-                  </span>
+                  {/* Quick Starter Action Chips */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full pt-1">
+                    {[
+                      { label: 'Explain project architecture', icon: '🔍', prompt: 'Explain the project architecture, directory structure, and main workflows.' },
+                      { label: 'Run test suite', icon: '🧪', prompt: 'Run the test suite and report any failing tests or errors.' },
+                      { label: 'Review git diff & status', icon: '📝', prompt: 'Inspect current git status and summarize modified or unstaged files.' },
+                      { label: 'Find potential optimizations', icon: '⚡', prompt: 'Audit the codebase for potential performance bottlenecks or optimizations.' },
+                    ].map((chip) => (
+                      <button
+                        key={chip.label}
+                        type="button"
+                        onClick={() => onSendMessage(chip.prompt)}
+                        className="p-2.5 rounded-xl bg-slate-900/80 hover:bg-slate-850 border border-slate-800 hover:border-indigo-500/40 text-left transition-all group cursor-pointer shadow-sm active:scale-98"
+                      >
+                        <div className="flex items-center gap-2 text-xs font-medium text-slate-300 group-hover:text-white">
+                          <span className="text-sm">{chip.icon}</span>
+                          <span className="truncate">{chip.label}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
 
-            <div ref={bottomAnchorRef} />
+              {conversationTurns.map((turn, turnIdx) => (
+                <TurnItem
+                  key={turn.id}
+                  turn={turn}
+                  isLastTurn={turnIdx === conversationTurns.length - 1}
+                  isStreaming={isStreaming}
+                  isWaitingForResponse={isWaitingForResponse}
+                  onSelectDiffFile={onSelectDiffFile}
+                  onSelectTab={onSelectTab}
+                  onReplyQuestion={onReplyQuestion}
+                />
+              ))}
+
+              {/* Immediate Thinking Feedback if user prompt has been sent and waiting for agent */}
+              {isWaitingForResponse &&
+                (!conversationTurns.length ||
+                  Boolean(conversationTurns[conversationTurns.length - 1].finalResponse)) && (
+                  <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-indigo-950/30 border border-indigo-500/20 text-indigo-300 text-xs font-mono shadow-sm animate-pulse max-w-xs mt-1">
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-spin shrink-0" />
+                    <span className="font-medium text-slate-200">OpenCode is thinking...</span>
+                    <span className="flex gap-1 ml-auto shrink-0">
+                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </span>
+                  </div>
+                )}
+
+              <div ref={bottomAnchorRef} />
+            </div>
           </div>
         )}
 
@@ -663,57 +685,59 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
 
       {/* Composer Input Bar, Todo Widget & Queued Messages */}
       {(activeTab === 'chat' || hideTabs) && (
-        <div className="w-full shrink-0 flex flex-col">
-          {/* Todo Widget */}
-          {todos && todos.length > 0 && (
-            <div className="px-3 sm:px-4 max-w-3xl mx-auto w-full mb-2">
-              <TodoWidget todos={todos} />
-            </div>
-          )}
+        <div className="w-full shrink-0 flex flex-col bg-slate-900/95 border-t border-slate-800/90 backdrop-blur-md relative z-30 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+          <div className="max-w-3xl mx-auto w-full">
+            {/* Todo Widget */}
+            {todos && todos.length > 0 && (
+              <div className="px-3 sm:px-4 w-full mb-2">
+                <TodoWidget todos={todos} />
+              </div>
+            )}
 
-          {/* Queued Messages Card */}
-          {queuedMessages && queuedMessages.length > 0 && (
-            <div className="px-3 sm:px-4 max-w-3xl mx-auto w-full mb-2">
-              <QueuedMessages
-                queue={queuedMessages}
-                isStreaming={isStreaming}
-                onSendNow={(id) => onSendQueuedMessageNow?.(id)}
-                onEdit={(item) => onEditQueuedMessage?.(item)}
-                onDelete={(id) => onDeleteQueuedMessage?.(id)}
-                onRetry={(id) => onRetryQueuedMessage?.(id)}
-              />
-            </div>
-          )}
+            {/* Queued Messages Card */}
+            {queuedMessages && queuedMessages.length > 0 && (
+              <div className="px-3 sm:px-4 w-full mb-2">
+                <QueuedMessages
+                  queue={queuedMessages}
+                  isStreaming={isStreaming}
+                  onSendNow={(id) => onSendQueuedMessageNow?.(id)}
+                  onEdit={(item) => onEditQueuedMessage?.(item)}
+                  onDelete={(id) => onDeleteQueuedMessage?.(id)}
+                  onRetry={(id) => onRetryQueuedMessage?.(id)}
+                />
+              </div>
+            )}
 
-          <Composer
-            onSendMessage={onSendMessage}
-            isStreaming={isStreaming}
-            onAbort={() => onAbort?.()}
-            models={models}
-            selectedModel={selectedModel}
-            onSelectModel={(m) => onSelectModel?.(m)}
-            permissions={permissions}
-            onReplyPermission={onReplyPermission}
-            editingItem={editingQueueItem}
-            onSaveEdit={onSaveQueuedMessageEdit}
-            onCancelEdit={onCancelQueuedMessageEdit}
-            telemetry={telemetry}
-            onOpenTelemetry={onOpenTelemetry}
-            onUndo={async () => {
-              setShowSafeRevertModal(true);
-              return { success: true };
-            }}
-            onCompact={onCompact}
-            onFork={onFork}
-            onSelectTab={onSelectTab}
-            onClearSession={onClearSession}
-            mode={mode}
-            onModeChange={onModeChange}
-            mentions={composerMentions}
-            onRemoveMention={(idx) => setComposerMentions((prev) => prev.filter((_, i) => i !== idx))}
-            onOpenMentionModal={() => setShowMentionModal(true)}
-            onQueueMessage={onQueueMessage}
-          />
+            <Composer
+              onSendMessage={onSendMessage}
+              isStreaming={isStreaming}
+              onAbort={() => onAbort?.()}
+              models={models}
+              selectedModel={selectedModel}
+              onSelectModel={(m) => onSelectModel?.(m)}
+              permissions={permissions}
+              onReplyPermission={onReplyPermission}
+              editingItem={editingQueueItem}
+              onSaveEdit={onSaveQueuedMessageEdit}
+              onCancelEdit={onCancelQueuedMessageEdit}
+              telemetry={telemetry}
+              onOpenTelemetry={onOpenTelemetry}
+              onUndo={async () => {
+                setShowSafeRevertModal(true);
+                return { success: true };
+              }}
+              onCompact={onCompact}
+              onFork={onFork}
+              onSelectTab={onSelectTab}
+              onClearSession={onClearSession}
+              mode={mode}
+              onModeChange={onModeChange}
+              mentions={composerMentions}
+              onRemoveMention={(idx) => setComposerMentions((prev) => prev.filter((_, i) => i !== idx))}
+              onOpenMentionModal={() => setShowMentionModal(true)}
+              onQueueMessage={onQueueMessage}
+            />
+          </div>
         </div>
       )}
 
