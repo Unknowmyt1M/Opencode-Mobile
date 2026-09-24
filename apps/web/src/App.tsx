@@ -7,7 +7,6 @@ import {
   X,
   Plus,
   MessageSquare,
-  FolderGit2,
   FileCheck2,
   Activity,
   Sparkles,
@@ -25,6 +24,7 @@ import { AgentWorkTimeline } from './components/AgentWorkTimeline';
 import { SessionLoadingSkeleton } from './components/SessionLoadingSkeleton';
 import { SessionTelemetryModal } from './components/SessionTelemetryModal';
 import { FileTreeExplorer } from './components/FileTreeExplorer';
+import { ProjectSelector } from './components/ProjectSelector';
 import { normalizeConversationTurns, type TurnGroup } from './utils/activityNormalizer';
 
 export default function App() {
@@ -33,6 +33,11 @@ export default function App() {
     devices,
     selectedDevice,
     setSelectedDeviceId,
+    projects,
+    selectedProjectId,
+    selectedProject,
+    selectProject,
+    fetchProjects,
     sessions,
     activeSession,
     projectContext,
@@ -122,19 +127,19 @@ export default function App() {
   // Auto-fetch data on device connection & auto-mirror active/latest session
   useEffect(() => {
     if (selectedDevice?.paired && selectedDevice?.opencodeStatus === 'connected') {
+      fetchProjects(selectedDevice.deviceId);
       fetchSessions(selectedDevice.deviceId).then((loadedSessions) => {
         if (!activeSessionRef.current && loadedSessions && loadedSessions.length > 0) {
-          // If any session is currently busy/streaming on PC, mirror that session first!
-          const busySession = loadedSessions.find((s) => sessionStatuses[s.id] === 'busy');
           let savedLastSessionId: string | null = null;
           try {
             savedLastSessionId = localStorage.getItem(`opencode_last_session_${selectedDevice.deviceId}`);
           } catch {}
+          const busySession = loadedSessions.find((s) => sessionStatuses[s.id] === 'busy');
           const targetSession =
-            busySession ||
-            (savedLastSessionId ? loadedSessions.find((s) => s.id === savedLastSessionId) : null);
+            (savedLastSessionId ? loadedSessions.find((s) => s.id === savedLastSessionId) : null) ||
+            busySession;
           if (targetSession) {
-            openSession(selectedDevice.deviceId, targetSession.id);
+            openSession(selectedDevice.deviceId, targetSession.id, targetSession.directory);
           }
         }
       });
@@ -146,6 +151,7 @@ export default function App() {
     selectedDevice?.paired,
     selectedDevice?.opencodeStatus,
     selectedDevice?.deviceId,
+    fetchProjects,
     fetchSessions,
     fetchModels,
     fetchPtys,
@@ -231,19 +237,13 @@ export default function App() {
               />
             </div>
 
-            {/* Workspace / Project Context Badge */}
-            {projectContext && (
-              <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center gap-2.5">
-                <FolderGit2 className="w-4 h-4 text-indigo-400 shrink-0" />
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-medium text-slate-200 truncate">
-                    {projectContext.name || 'Workspace'}
-                  </p>
-                  <p className="text-[10px] text-slate-500 font-mono truncate">
-                    {projectContext.worktree || 'Local Repository'}
-                  </p>
-                </div>
-              </div>
+            {/* Workspace / Project Context Selector */}
+            {selectedDevice && (
+              <ProjectSelector
+                projects={projects}
+                selectedProjectId={selectedProjectId}
+                onSelectProject={selectProject}
+              />
             )}
           </div>
 
@@ -272,17 +272,26 @@ export default function App() {
                 value={newSessionTitle}
                 onChange={(e) => setNewSessionTitle(e.target.value)}
                 disabled={isCreatingSession}
-                placeholder="+ New session title..."
+                placeholder={selectedProject ? `+ New session in ${selectedProject.name}...` : '+ New session title...'}
                 className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-slate-900 border border-slate-800 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-sans disabled:opacity-50"
               />
             </form>
 
             {sessions.length === 0 ? (
-              <div className="p-4 text-center text-slate-500 text-xs">No active sessions</div>
+              <div className="p-4 text-center text-slate-500 text-xs">
+                {selectedProject
+                  ? `No sessions in ${selectedProject.name}`
+                  : 'No active sessions'}
+              </div>
             ) : (
               sessions.map((sess) => {
                 const isActive = activeSession?.session.id === sess.id;
                 const isItemLoading = sess.id === loadingSessionId;
+                const isBusy = sessionStatuses[sess.id] === 'busy';
+                const projectName = !selectedProject && sess.directory
+                  ? sess.directory.replace(/\\/g, '/').split('/').filter(Boolean).pop()
+                  : null;
+
                 return (
                   <button
                     key={sess.id}
@@ -290,7 +299,7 @@ export default function App() {
                     disabled={isItemLoading}
                     onClick={() => {
                       if (selectedDevice) {
-                        openSession(selectedDevice.deviceId, sess.id);
+                        openSession(selectedDevice.deviceId, sess.id, sess.directory);
                       }
                     }}
                     className={`w-full text-left p-2 rounded-xl text-xs transition-all flex items-center justify-between group cursor-pointer ${
@@ -304,10 +313,22 @@ export default function App() {
                     <div className="flex items-center gap-2 min-w-0 pr-2">
                       {isItemLoading ? (
                         <Loader2 className="w-3.5 h-3.5 shrink-0 text-indigo-400 animate-spin" />
+                      ) : isBusy ? (
+                        <span className="relative flex h-2.5 w-2.5 shrink-0">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                        </span>
                       ) : (
                         <MessageSquare className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-white' : 'text-slate-400'}`} />
                       )}
-                      <span className="truncate">{sess.title || 'Untitled Session'}</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium">{sess.title || 'Untitled Session'}</p>
+                        {projectName && (
+                          <p className={`text-[10px] truncate font-mono mt-0.5 ${isActive ? 'text-indigo-200' : 'text-slate-500'}`}>
+                            {projectName}
+                          </p>
+                        )}
+                      </div>
                     </div>
                     {isItemLoading ? (
                       <span className="text-[10px] font-mono text-indigo-400 animate-pulse">Loading...</span>
@@ -443,9 +464,12 @@ export default function App() {
               <Dashboard
                 device={selectedDevice}
                 sessions={sessions}
+                projects={projects}
+                selectedProjectId={selectedProjectId}
+                onSelectProject={selectProject}
                 projectContext={projectContext}
-                onOpenSession={(sId) => openSession(selectedDevice.deviceId, sId)}
-                onCreateSession={(t) => createSession(selectedDevice.deviceId, t)}
+                onOpenSession={(sId, dir) => openSession(selectedDevice.deviceId, sId, dir)}
+                onCreateSession={(t, dir) => createSession(selectedDevice.deviceId, t, dir)}
                 onRefreshSessions={() => fetchSessions(selectedDevice.deviceId)}
                 onPairSubmit={pairDevice}
               />
@@ -746,10 +770,13 @@ export default function App() {
               <Dashboard
                 device={selectedDevice}
                 sessions={sessions}
+                projects={projects}
+                selectedProjectId={selectedProjectId}
+                onSelectProject={selectProject}
                 projectContext={projectContext}
                 loadingSessionId={loadingSessionId}
-                onOpenSession={(sId) => selectedDevice && openSession(selectedDevice.deviceId, sId)}
-                onCreateSession={(t) => selectedDevice && createSession(selectedDevice.deviceId, t)}
+                onOpenSession={(sId, dir) => selectedDevice && openSession(selectedDevice.deviceId, sId, dir)}
+                onCreateSession={(t, dir) => selectedDevice && createSession(selectedDevice.deviceId, t, dir)}
                 onRefreshSessions={() => selectedDevice && fetchSessions(selectedDevice.deviceId)}
                 onPairSubmit={pairDevice}
               />

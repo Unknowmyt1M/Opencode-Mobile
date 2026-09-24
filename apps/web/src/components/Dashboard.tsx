@@ -17,15 +17,19 @@ import {
   CheckCircle2,
   AlertCircle,
 } from 'lucide-react';
-import type { DeviceInfo, OpenCodeSession, ProjectContext } from '@opencode-remote/protocol';
+import type { DeviceInfo, OpenCodeSession, ProjectContext, OpenCodeProject } from '@opencode-remote/protocol';
+import { ProjectSelector } from './ProjectSelector';
 
 interface DashboardProps {
   device?: DeviceInfo;
   sessions: OpenCodeSession[];
+  projects?: OpenCodeProject[];
+  selectedProjectId?: string | null;
+  onSelectProject?: (projectId: string | null) => void;
   projectContext?: ProjectContext | null;
   loadingSessionId?: string | null;
-  onOpenSession: (sessionId: string) => void;
-  onCreateSession: (title?: string) => void;
+  onOpenSession: (sessionId: string, directory?: string) => void;
+  onCreateSession: (title?: string, directory?: string) => void;
   onRefreshSessions: () => void;
   onPairSubmit?: (code: string) => Promise<{ success: boolean; message?: string }>;
 }
@@ -33,6 +37,9 @@ interface DashboardProps {
 export function Dashboard({
   device,
   sessions,
+  projects = [],
+  selectedProjectId = null,
+  onSelectProject,
   projectContext,
   loadingSessionId,
   onOpenSession,
@@ -203,6 +210,15 @@ export function Dashboard({
 
   return (
     <div className="space-y-4">
+      {/* Workspace Context Selector */}
+      {projects.length > 0 && onSelectProject && (
+        <ProjectSelector
+          projects={projects}
+          selectedProjectId={selectedProjectId}
+          onSelectProject={onSelectProject}
+        />
+      )}
+
       {/* Workspace Context Card */}
       <div className="p-4 rounded-3xl bg-gradient-to-b from-zinc-900/80 to-zinc-900/40 border border-zinc-800/80 shadow-xl space-y-3 relative overflow-hidden">
         <div className="flex items-start justify-between">
@@ -334,10 +350,14 @@ export function Dashboard({
           <div className="space-y-2">
             {filteredSessions.map((sess) => {
               const isLoading = sess.id === loadingSessionId;
+              const projectName = !selectedProjectId && sess.directory
+                ? sess.directory.replace(/\\/g, '/').split('/').filter(Boolean).pop()
+                : null;
+
               return (
                 <div
                   key={sess.id}
-                  onClick={() => !isLoading && onOpenSession(sess.id)}
+                  onClick={() => !isLoading && onOpenSession(sess.id, sess.directory)}
                   className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between group shadow-sm ${
                     isLoading
                       ? 'bg-zinc-900/80 border-indigo-500/50 cursor-wait'
@@ -357,6 +377,11 @@ export function Dashboard({
                         <h4 className="text-xs font-semibold text-zinc-200 truncate group-hover:text-white transition-colors">
                           {sess.title || 'Untitled Session'}
                         </h4>
+                        {projectName && (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-zinc-800 text-indigo-300 font-mono">
+                            {projectName}
+                          </span>
+                        )}
                         {isLoading && (
                           <span className="text-[10px] font-mono text-indigo-400 animate-pulse">
                             Opening...

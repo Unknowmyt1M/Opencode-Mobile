@@ -31,7 +31,10 @@ import {
   type FsReadResultPayload,
   type SessionInteractionMode,
   type SessionGetResultPayload,
-  type SessionListResultPayload,
+  type OpenCodeProject,
+  type ProjectListResultPayload,
+  type SessionListGlobalResultPayload,
+  type SessionListProjectResultPayload,
   type QueuedMessage,
 } from '@opencode-remote/protocol';
 import { useMessageQueue } from './hooks/useMessageQueue';
@@ -83,6 +86,16 @@ export function useRelay(relayWsUrl?: string) {
     messages: SessionMessage[];
   } | null>(null);
   const [projectContext, setProjectContext] = useState<ProjectContext | null>(null);
+  const [projects, setProjects] = useState<OpenCodeProject[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const selectedProjectRef = useRef<OpenCodeProject | null>(null);
+  const selectedProject = useMemo(() => {
+    if (!selectedProjectId || selectedProjectId === 'all') return null;
+    return projects.find((p) => p.id === selectedProjectId) || null;
+  }, [projects, selectedProjectId]);
+  useEffect(() => {
+    selectedProjectRef.current = selectedProject;
+  }, [selectedProject]);
   const [activeDiffFile, setActiveDiffFile] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('chat');
 
@@ -340,13 +353,15 @@ export function useRelay(relayWsUrl?: string) {
   );
 
   const fetchSessionDiff = useCallback(
-    async (deviceId: string, sessionId: string) => {
+    async (deviceId: string, sessionId: string, directory?: string) => {
       const token = deviceTokens[deviceId];
       if (!token) return [];
+      const targetDir = directory || activeSessionRef.current?.session?.directory;
       const msg = createMessage('SESSION_DIFF_GET', {
         deviceId,
         sessionId,
         deviceToken: token,
+        directory: targetDir,
       });
       try {
         const res = await sendRpc<{ diffs: SnapshotFileDiff[] }>(msg);
@@ -503,6 +518,30 @@ export function useRelay(relayWsUrl?: string) {
                   message: 'Computer successfully paired!',
                 });
                 pairingPromiseRef.current = null;
+              }
+              break;
+            }
+
+            case 'PROJECT_LIST_RESULT': {
+              const payload = msg.payload as ProjectListResultPayload;
+              setProjects(payload.projects || []);
+              break;
+            }
+
+            case 'SESSION_LIST_GLOBAL_RESULT': {
+              const payload = msg.payload as SessionListGlobalResultPayload;
+              setSessions(payload.sessions || []);
+              if (payload.statuses) {
+                setSessionStatuses(payload.statuses);
+              }
+              break;
+            }
+
+            case 'SESSION_LIST_PROJECT_RESULT': {
+              const payload = msg.payload as SessionListProjectResultPayload;
+              setSessions(payload.sessions || []);
+              if (payload.statuses) {
+                setSessionStatuses(payload.statuses);
               }
               break;
             }
@@ -1371,33 +1410,127 @@ export function useRelay(relayWsUrl?: string) {
     [deviceTokens, removeDeviceToken, sendRpc]
   );
 
-  // Sessions API
-  const fetchSessions = useCallback(
+  // ==========================================
+  // Projects & Global Sessions API
+  // ==========================================
+  const fetchProjects = useCallback(
     async (deviceId: string) => {
+      const token = deviceTokens[deviceId];
+      if (!token) {
+        setProjects([]);
+        return [];
+      }
+      const msg = createMessage('PROJECT_LIST', {
+        deviceId,
+        deviceToken: token,
+      });
+      try {
+        const res = await sendRpc<ProjectListResultPayload>(msg);
+        const list = res.projects || [];
+        setProjects(list);
+        return list;
+      } catch (err: any) {
+        console.warn('[useRelay] Failed to fetch projects:', err.message);
+        return [];
+      }
+    },
+    [deviceTokens, sendRpc]
+  );
+
+  const fetchGlobalSessions = useCallback(
+    async (deviceId: string, limit?: number) => {
       const token = deviceTokens[deviceId];
       if (!token) {
         setSessions([]);
         return [];
       }
-      const msg = createMessage('SESSION_LIST', {
+      const msg = createMessage('SESSION_LIST_GLOBAL', {
         deviceId,
         deviceToken: token,
+        limit,
       });
       try {
-        const res = await sendRpc<SessionListResultPayload>(msg);
+        const res = await sendRpc<SessionListGlobalResultPayload>(msg);
         setSessions(res.sessions || []);
         if (res.statuses) {
           setSessionStatuses(res.statuses);
         }
         return res.sessions;
       } catch (err: any) {
-        if (!err.message?.includes('invalid or revoked')) {
-          setLastError(err.message);
-        }
+        console.warn('[useRelay] Failed to fetch global sessions:', err.message);
         return [];
       }
     },
     [deviceTokens, sendRpc]
+  );
+
+  const fetchProjectSessions = useCallback(
+    async (deviceId: string, directory?: string, projectId?: string, limit?: number) => {
+      const token = deviceTokens[deviceId];
+      if (!token) {
+        setSessions([]);
+        return [];
+      }
+      const msg = createMessage('SESSION_LIST_PROJECT', {
+        deviceId,
+        projectId,
+        directory,
+        deviceToken: token,
+        limit,
+      });
+      try {
+        const res = await sendRpc<SessionListProjectResultPayload>(msg);
+        setSessions(res.sessions || []);
+        if (res.statuses) {
+          setSessionStatuses(res.statuses);
+        }
+        return res.sessions;
+      } catch (err: any) {
+        console.warn('[useRelay] Failed to fetch project sessions:', err.message);
+        return [];
+      }
+    },
+    [deviceTokens, sendRpc]
+  );
+
+  const selectProject = useCallback(
+    (projectId: string | null) => {
+      setSelectedProjectId(projectId);
+      if (selectedDeviceIdRef.current) {
+        try {
+          if (projectId) {
+            localStorage.setItem(`opencode_last_project_${selectedDeviceIdRef.current}`, projectId);
+          } else {
+            localStorage.removeItem(`opencode_last_project_${selectedDeviceIdRef.current}`);
+          }
+        } catch {}
+
+        if (!projectId || projectId === 'all') {
+          fetchGlobalSessions(selectedDeviceIdRef.current);
+        } else {
+          const proj = projects.find((p) => p.id === projectId);
+          if (proj) {
+            fetchProjectSessions(selectedDeviceIdRef.current, proj.worktree, proj.id);
+          }
+        }
+      }
+    },
+    [projects, fetchGlobalSessions, fetchProjectSessions]
+  );
+
+  // Sessions API
+  const fetchSessions = useCallback(
+    async (deviceId: string) => {
+      if (selectedProjectRef.current?.worktree) {
+        return fetchProjectSessions(
+          deviceId,
+          selectedProjectRef.current.worktree,
+          selectedProjectRef.current.id
+        );
+      }
+      return fetchGlobalSessions(deviceId);
+    },
+    [fetchGlobalSessions, fetchProjectSessions]
   );
 
   useEffect(() => {
@@ -1405,11 +1538,15 @@ export function useRelay(relayWsUrl?: string) {
   }, [fetchSessions]);
 
   const createSession = useCallback(
-    async (deviceId: string, title?: string) => {
+    async (deviceId: string, title?: string, directory?: string) => {
+      const targetDir = directory || selectedProjectRef.current?.worktree;
+      const targetProjectId = selectedProjectRef.current?.id;
       const msg = createMessage('SESSION_CREATE', {
         deviceId,
         title,
         deviceToken: deviceTokens[deviceId],
+        directory: targetDir,
+        projectId: targetProjectId,
       });
       const res = await sendRpc<{ session: OpenCodeSession }>(msg);
       if (res.session) {
@@ -1430,15 +1567,17 @@ export function useRelay(relayWsUrl?: string) {
   );
 
   const fetchTodos = useCallback(
-    async (deviceId: string, sessionId: string) => {
+    async (deviceId: string, sessionId: string, directory?: string) => {
       const token = deviceTokens[deviceId];
       if (!token || !sessionId) return;
+      const targetDir = directory || activeSessionRef.current?.session?.directory;
       try {
         const res = await sendRpc<TodoListResultPayload>(
           createMessage('TODO_LIST_REQUEST', {
             deviceId,
             sessionId,
             deviceToken: token,
+            directory: targetDir,
           })
         );
         if (res?.todos && sessionId) {
@@ -1470,7 +1609,7 @@ export function useRelay(relayWsUrl?: string) {
   }, []);
 
   const openSession = useCallback(
-    async (deviceId: string, sessionId: string) => {
+    async (deviceId: string, sessionId: string, directory?: string) => {
       latestRequestedSessionIdRef.current = sessionId;
       const currentDevGen = deviceTransitionGenerationRef.current;
       setIsLoadingSession(true);
@@ -1480,6 +1619,7 @@ export function useRelay(relayWsUrl?: string) {
           deviceId,
           sessionId,
           deviceToken: deviceTokens[deviceId],
+          directory,
         });
         const res = await sendRpc<{ session: OpenCodeSession; messages: SessionMessage[] }>(msg);
         if (
@@ -1489,9 +1629,9 @@ export function useRelay(relayWsUrl?: string) {
         ) {
           setActiveSession(res);
           // Pre-fetch diffs, workspace context, and todos
-          fetchSessionDiff(deviceId, sessionId);
+          fetchSessionDiff(deviceId, sessionId, res.session.directory || directory);
           fetchWorkspace(deviceId);
-          fetchTodos(deviceId, sessionId);
+          fetchTodos(deviceId, sessionId, res.session.directory || directory);
           fetchQueue(deviceId, sessionId);
         }
         return res;
@@ -1540,6 +1680,7 @@ export function useRelay(relayWsUrl?: string) {
         };
       });
 
+      const dir = activeSessionRef.current?.session?.directory || selectedProjectRef.current?.worktree;
       const token = deviceTokensRef.current[deviceId] || deviceTokens[deviceId];
       const msg = createMessage('MESSAGE_SEND', {
         deviceId,
@@ -1548,6 +1689,7 @@ export function useRelay(relayWsUrl?: string) {
         clientMessageId,
         deviceToken: token,
         model,
+        directory: dir,
       });
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -2122,6 +2264,13 @@ export function useRelay(relayWsUrl?: string) {
     selectedDevice,
     selectedDeviceId,
     setSelectedDeviceId,
+    projects,
+    selectedProjectId,
+    selectedProject,
+    selectProject,
+    fetchProjects,
+    fetchGlobalSessions,
+    fetchProjectSessions,
     sessions,
     sessionStatuses,
     activeSession,

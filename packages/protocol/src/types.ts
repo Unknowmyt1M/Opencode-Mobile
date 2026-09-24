@@ -35,6 +35,25 @@ export interface OpenCodeSession {
   title: string;
   createdAt: number;
   updatedAt?: number;
+  projectId?: string;
+  directory?: string;
+  parentID?: string;
+}
+
+export interface OpenCodeProject {
+  id: string;
+  worktree: string;
+  name?: string;
+  vcs?: string;
+  time?: {
+    created?: number;
+    updated?: number;
+  };
+  icon?: {
+    url?: string;
+    color?: string;
+  };
+  sandboxes?: string[];
 }
 
 export interface ToolState {
@@ -257,8 +276,46 @@ export interface DeviceRevokeResultPayload {
 }
 
 // ==========================================
-// Phase 2: Session Payloads
+// Phase 2: Project & Global Session Payloads
 // ==========================================
+export interface ProjectListPayload {
+  deviceId: string;
+  deviceToken?: string;
+}
+
+export interface ProjectListResultPayload {
+  deviceId: string;
+  projects: OpenCodeProject[];
+}
+
+export interface SessionListGlobalPayload {
+  deviceId: string;
+  deviceToken?: string;
+  limit?: number;
+}
+
+export interface SessionListGlobalResultPayload {
+  deviceId: string;
+  sessions: OpenCodeSession[];
+  statuses?: Record<string, string>;
+}
+
+export interface SessionListProjectPayload {
+  deviceId: string;
+  projectId?: string;
+  directory?: string;
+  deviceToken?: string;
+  limit?: number;
+}
+
+export interface SessionListProjectResultPayload {
+  deviceId: string;
+  projectId?: string;
+  directory?: string;
+  sessions: OpenCodeSession[];
+  statuses?: Record<string, string>;
+}
+
 export interface SessionListPayload {
   deviceId: string;
   deviceToken?: string;
@@ -274,6 +331,8 @@ export interface SessionCreatePayload {
   deviceId: string;
   title?: string;
   deviceToken?: string;
+  directory?: string;
+  projectId?: string;
 }
 
 export interface SessionCreateResultPayload {
@@ -332,6 +391,7 @@ export interface SessionGetPayload {
   deviceId: string;
   sessionId: string;
   deviceToken?: string;
+  directory?: string;
 }
 
 export interface SessionGetResultPayload {
@@ -415,6 +475,7 @@ export interface MessageSendPayload {
   content: string;
   clientMessageId?: string;
   deviceToken?: string;
+  directory?: string;
   model?: {
     providerID: string;
     modelID: string;
@@ -508,6 +569,7 @@ export interface SessionDiffGetPayload {
   deviceId: string;
   sessionId: string;
   deviceToken?: string;
+  directory?: string;
 }
 
 export interface SessionDiffGetResultPayload {
@@ -727,6 +789,7 @@ export interface TodoListRequestPayload {
   deviceId: string;
   sessionId: string;
   deviceToken?: string;
+  directory?: string;
 }
 
 export interface TodoListResultPayload {

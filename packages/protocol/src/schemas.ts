@@ -30,6 +30,29 @@ export const OpenCodeSessionSchema = z.object({
   title: z.string().max(256),
   createdAt: z.number().int(),
   updatedAt: z.number().int().optional(),
+  projectId: z.string().max(128).optional(),
+  directory: z.string().optional(),
+  parentID: z.string().max(128).optional(),
+});
+
+export const OpenCodeProjectSchema = z.object({
+  id: z.string().min(1).max(128),
+  worktree: z.string(),
+  name: z.string().optional(),
+  vcs: z.string().optional(),
+  time: z
+    .object({
+      created: z.number().optional(),
+      updated: z.number().optional(),
+    })
+    .optional(),
+  icon: z
+    .object({
+      url: z.string().optional(),
+      color: z.string().optional(),
+    })
+    .optional(),
+  sandboxes: z.array(z.string()).optional(),
 });
 
 export const ToolStateSchema = z.object({
@@ -344,6 +367,81 @@ export const DeviceRevokeResultMessageSchema = z.object({
   }),
 });
 
+// Phase 2: Project & Global Session Schemas
+export const ProjectListMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PROJECT_LIST'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const ProjectListResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PROJECT_LIST_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    projects: z.array(OpenCodeProjectSchema),
+  }),
+});
+
+export const SessionListGlobalMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_LIST_GLOBAL'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+    limit: z.number().int().positive().optional(),
+  }),
+});
+
+export const SessionListGlobalResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_LIST_GLOBAL_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessions: z.array(OpenCodeSessionSchema),
+    statuses: z.record(z.string(), z.string()).optional(),
+  }),
+});
+
+export const SessionListProjectMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_LIST_PROJECT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    projectId: z.string().max(128).optional(),
+    directory: z.string().optional(),
+    deviceToken: z.string().max(256).optional(),
+    limit: z.number().int().positive().optional(),
+  }),
+});
+
+export const SessionListProjectResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_LIST_PROJECT_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    projectId: z.string().max(128).optional(),
+    directory: z.string().optional(),
+    sessions: z.array(OpenCodeSessionSchema),
+    statuses: z.record(z.string(), z.string()).optional(),
+  }),
+});
+
 // Phase 2: Session Schemas
 export const SessionListMessageSchema = z.object({
   id: z.string().min(1).max(64),
@@ -377,6 +475,8 @@ export const SessionCreateMessageSchema = z.object({
     deviceId: z.string().min(1).max(128),
     title: z.string().max(256).optional(),
     deviceToken: z.string().max(256).optional(),
+    directory: z.string().optional(),
+    projectId: z.string().max(128).optional(),
   }),
 });
 
@@ -400,6 +500,7 @@ export const SessionGetMessageSchema = z.object({
     deviceId: z.string().min(1).max(128),
     sessionId: z.string().min(1).max(128),
     deviceToken: z.string().max(256).optional(),
+    directory: z.string().optional(),
   }),
 });
 
@@ -648,6 +749,7 @@ export const MessageSendMessageSchema = z.object({
     content: z.string().min(1).max(65536),
     clientMessageId: z.string().max(128).optional(),
     deviceToken: z.string().max(256).optional(),
+    directory: z.string().optional(),
     model: z.object({
       providerID: z.string().min(1),
       modelID: z.string().min(1),
@@ -793,6 +895,7 @@ export const SessionDiffGetMessageSchema = z.object({
     deviceId: z.string().min(1).max(128),
     sessionId: z.string().min(1).max(128),
     deviceToken: z.string().max(256).optional(),
+    directory: z.string().optional(),
   }),
 });
 
@@ -1142,6 +1245,7 @@ export const TodoListRequestMessageSchema = z.object({
     deviceId: z.string().min(1).max(128),
     sessionId: z.string().min(1).max(128),
     deviceToken: z.string().max(256).optional(),
+    directory: z.string().optional(),
   }),
 });
 
@@ -1286,6 +1390,13 @@ export const MessageSchema = z.discriminatedUnion('type', [
   PairingCompleteMessageSchema,
   DeviceRevokeMessageSchema,
   DeviceRevokeResultMessageSchema,
+  // Project & Global Session Discovery
+  ProjectListMessageSchema,
+  ProjectListResultMessageSchema,
+  SessionListGlobalMessageSchema,
+  SessionListGlobalResultMessageSchema,
+  SessionListProjectMessageSchema,
+  SessionListProjectResultMessageSchema,
   SessionListMessageSchema,
   SessionListResultMessageSchema,
   SessionCreateMessageSchema,

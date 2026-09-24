@@ -13,6 +13,7 @@ import {
   type QuestionItem,
   type MessagePart,
   type SessionRuntimeSnapshot,
+  type SessionRuntimeStatus,
 } from '@opencode-remote/protocol';
 import type { AgentConfig } from './config.js';
 import { OpenCodeDetector } from './opencode.js';
@@ -112,6 +113,7 @@ export class RemoteAgent {
 
   private sessionPermissions: Map<string, Map<string, PermissionItem>> = new Map();
   private sessionQuestions: Map<string, Map<string, QuestionItem>> = new Map();
+  private sessionDirectories: Map<string, string> = new Map();
 
   private getSessionPermissions(sessionId: string): Map<string, PermissionItem> {
     let map = this.sessionPermissions.get(sessionId);
@@ -155,7 +157,7 @@ export class RemoteAgent {
     string,
     {
       sessionId: string;
-      status: 'idle' | 'busy' | 'error';
+      status: SessionRuntimeStatus;
       turnId?: string;
       userMessageId?: string;
       assistantMessageId?: string;
@@ -499,6 +501,28 @@ export class RemoteAgent {
     this.sendMessage(rejectMsg);
   }
 
+  private async getNormalizedSessionStatuses(): Promise<Record<string, string>> {
+    const statuses: Record<string, string> = {};
+    try {
+      const rawStatuses = await this.adapter.getSessionStatuses();
+      for (const [sId, val] of Object.entries(rawStatuses)) {
+        statuses[sId] = typeof val === 'object' && val !== null ? (val as any).type || 'idle' : String(val);
+      }
+    } catch {}
+
+    for (const [sId, rt] of this.sessionRuntimes.entries()) {
+      if (
+        rt.status === 'busy' ||
+        rt.status === 'streaming' ||
+        rt.status === 'thinking' ||
+        rt.status === 'tool_executing'
+      ) {
+        statuses[sId] = 'busy';
+      }
+    }
+    return statuses;
+  }
+
   private setState(newState: ConnectionState) {
     if (this.state !== newState) {
       this.state = newState;
@@ -635,19 +659,112 @@ export class RemoteAgent {
         }
 
         // ==========================================
-        // Session RPC Handlers
+        // Project & Global Session RPC Handlers
         // ==========================================
+        case 'PROJECT_LIST': {
+          try {
+            const projects = await this.adapter.listProjects();
+            const res = createMessage(
+              'PROJECT_LIST_RESULT',
+              {
+                deviceId: this.config.deviceId,
+                projects,
+              },
+              msg.id
+            );
+            this.sendMessage(res);
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage('ERROR', {
+                code: 'OPENCODE_API_ERROR',
+                message: err.message,
+                requestId: msg.id,
+              })
+            );
+          }
+          break;
+        }
+
+        case 'SESSION_LIST_GLOBAL': {
+          try {
+            const sessions = await this.adapter.listGlobalSessions(msg.payload.limit);
+            const statuses = await this.getNormalizedSessionStatuses();
+
+            for (const s of sessions) {
+              if (s.directory) {
+                this.sessionDirectories.set(s.id, s.directory);
+              }
+            }
+
+            const res = createMessage(
+              'SESSION_LIST_GLOBAL_RESULT',
+              {
+                deviceId: this.config.deviceId,
+                sessions,
+                statuses,
+              },
+              msg.id
+            );
+            this.sendMessage(res);
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage('ERROR', {
+                code: 'OPENCODE_API_ERROR',
+                message: err.message,
+                requestId: msg.id,
+              })
+            );
+          }
+          break;
+        }
+
+        case 'SESSION_LIST_PROJECT': {
+          try {
+            const targetDir = msg.payload.directory;
+            const sessions = targetDir
+              ? await this.adapter.listProjectSessions(targetDir)
+              : await this.adapter.listSessions();
+
+            const statuses = await this.getNormalizedSessionStatuses();
+
+            for (const s of sessions) {
+              if (s.directory) {
+                this.sessionDirectories.set(s.id, s.directory);
+              }
+            }
+
+            const res = createMessage(
+              'SESSION_LIST_PROJECT_RESULT',
+              {
+                deviceId: this.config.deviceId,
+                projectId: msg.payload.projectId,
+                directory: targetDir,
+                sessions,
+                statuses,
+              },
+              msg.id
+            );
+            this.sendMessage(res);
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage('ERROR', {
+                code: 'OPENCODE_API_ERROR',
+                message: err.message,
+                requestId: msg.id,
+              })
+            );
+          }
+          break;
+        }
+
         case 'SESSION_LIST': {
           try {
             const sessions = await this.adapter.listSessions();
-            let statuses: Record<string, { type: 'busy' | 'idle' }> = {};
-            try {
-              statuses = await this.adapter.getSessionStatuses();
-            } catch {}
+            const statuses = await this.getNormalizedSessionStatuses();
 
-            for (const [sId, rt] of this.sessionRuntimes.entries()) {
-              if (rt.status === 'busy') {
-                statuses[sId] = { type: 'busy' };
+            for (const s of sessions) {
+              if (s.directory) {
+                this.sessionDirectories.set(s.id, s.directory);
               }
             }
 
@@ -657,7 +774,7 @@ export class RemoteAgent {
                 deviceId: this.config.deviceId,
                 sessions,
                 statuses,
-              } as any,
+              },
               msg.id // Preserve requestId
             );
             this.sendMessage(res);
@@ -675,7 +792,10 @@ export class RemoteAgent {
 
         case 'SESSION_CREATE': {
           try {
-            const session = await this.adapter.createSession(msg.payload.title);
+            const session = await this.adapter.createSession(msg.payload.directory, msg.payload.title);
+            if (session.directory || msg.payload.directory) {
+              this.sessionDirectories.set(session.id, (session.directory || msg.payload.directory)!);
+            }
             const res = createMessage(
               'SESSION_CREATE_RESULT',
               {
@@ -699,20 +819,25 @@ export class RemoteAgent {
 
         case 'SESSION_GET': {
           try {
-            const { session, messages } = await this.adapter.getSession(msg.payload.sessionId);
+            const dir = msg.payload.directory || this.sessionDirectories.get(msg.payload.sessionId);
+            const { session, messages } = await this.adapter.getSession(msg.payload.sessionId, dir);
+            if (session.directory) {
+              this.sessionDirectories.set(session.id, session.directory);
+            }
             const rt = this.getOrCreateRuntime(msg.payload.sessionId);
             const currentTurn = this.sessionTurns.get(msg.payload.sessionId);
             const isStreaming = rt.status === 'busy' || Boolean(currentTurn && currentTurn.startedEmitted && !currentTurn.completedEmitted);
 
+            const effectiveDir = session.directory || dir;
             try {
-              const diffs = await this.adapter.getSessionDiff(msg.payload.sessionId);
+              const diffs = await this.adapter.getSessionDiff(msg.payload.sessionId, effectiveDir);
               rt.diffs = diffs ?? [];
             } catch {
               rt.diffs = [];
             }
 
             try {
-              const todos = await this.adapter.getTodos(msg.payload.sessionId);
+              const todos = await this.adapter.getTodos(msg.payload.sessionId, effectiveDir);
               rt.todos = todos ?? [];
             } catch {
               rt.todos = [];
@@ -768,7 +893,8 @@ export class RemoteAgent {
 
         case 'SESSION_DIFF_GET': {
           try {
-            const diffs = await this.adapter.getSessionDiff(msg.payload.sessionId);
+            const dir = msg.payload.directory || this.sessionDirectories.get(msg.payload.sessionId);
+            const diffs = await this.adapter.getSessionDiff(msg.payload.sessionId, dir);
             const res = createMessage(
               'SESSION_DIFF_GET_RESULT',
               {
@@ -818,7 +944,8 @@ export class RemoteAgent {
         case 'MESSAGE_SEND': {
           try {
             const { sessionId, content, model, clientMessageId } = msg.payload;
-            const messageId = await this.adapter.sendMessage(sessionId, content, model);
+            const dir = msg.payload.directory || this.sessionDirectories.get(sessionId);
+            const messageId = await this.adapter.sendMessage(sessionId, content, model, dir);
 
             // Mark turn active
             const turn = this.getOrCreateTurn(sessionId, messageId);
@@ -872,7 +999,8 @@ export class RemoteAgent {
 
         case 'TODO_LIST_REQUEST': {
           try {
-            const todos = await this.adapter.getTodos(msg.payload.sessionId);
+            const dir = msg.payload.directory || this.sessionDirectories.get(msg.payload.sessionId);
+            const todos = await this.adapter.getTodos(msg.payload.sessionId, dir);
             const res = createMessage(
               'TODO_LIST_RESULT',
               {
@@ -982,7 +1110,8 @@ export class RemoteAgent {
         // ==========================================
         case 'SESSION_ABORT': {
           try {
-            const success = await this.adapter.abortSession(msg.payload.sessionId);
+            const dir = this.sessionDirectories.get(msg.payload.sessionId);
+            const success = await this.adapter.abortSession(msg.payload.sessionId, dir);
             this.sendMessage(
               createMessage('SESSION_ABORT_RESULT', {
                 deviceId: this.config.deviceId,

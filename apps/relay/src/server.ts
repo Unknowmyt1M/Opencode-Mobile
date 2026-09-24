@@ -877,6 +877,9 @@ export function buildRelayServer(options: RelayOptions = {}): {
 
             case 'PTY_CREATE':
             case 'PTY_LIST':
+            case 'PROJECT_LIST':
+            case 'SESSION_LIST_GLOBAL':
+            case 'SESSION_LIST_PROJECT':
             case 'SESSION_ABORT':
             case 'SESSION_FORK':
             case 'SESSION_REVERT':
@@ -979,6 +982,9 @@ export function buildRelayServer(options: RelayOptions = {}): {
               break;
             }
 
+            case 'PROJECT_LIST_RESULT':
+            case 'SESSION_LIST_GLOBAL_RESULT':
+            case 'SESSION_LIST_PROJECT_RESULT':
             case 'SESSION_ABORT_RESULT':
             case 'SESSION_FORK_RESULT':
             case 'SESSION_REVERT_RESULT':

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type {
   OpenCodeSession,
+  OpenCodeProject,
   SessionMessage,
   SnapshotFileDiff,
   ProjectContext,
@@ -56,7 +57,7 @@ export class OpenCodeAdapter {
     }
   }
 
-  private getHeaders(): Record<string, string> {
+  getHeaders(directory?: string): Record<string, string> {
     const h: Record<string, string> = {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
@@ -64,7 +65,78 @@ export class OpenCodeAdapter {
     if (this.authHeader) {
       h['Authorization'] = this.authHeader;
     }
+    if (directory) {
+      h['x-opencode-directory'] = directory;
+    }
     return h;
+  }
+
+  async listProjects(): Promise<OpenCodeProject[]> {
+    const res = await fetch(`${this.baseUrl}/project`, {
+      headers: this.getHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to list projects: HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as any[];
+    return (data || []).map((p) => {
+      const parts = (p.worktree || '').split(/[\\/]/).filter(Boolean);
+      const inferredName = parts.length > 0 ? parts[parts.length - 1] : undefined;
+      return {
+        id: p.id,
+        worktree: p.worktree,
+        name: p.name || inferredName,
+        vcs: p.vcs,
+        time: p.time,
+        icon: p.icon,
+        sandboxes: p.sandboxes,
+      };
+    });
+  }
+
+  async listGlobalSessions(limit = 100): Promise<OpenCodeSession[]> {
+    try {
+      const res = await fetch(`${this.baseUrl}/api/session?limit=${limit}`, {
+        headers: this.getHeaders(),
+      });
+      if (res.ok) {
+        const json = (await res.json()) as any;
+        const list = json?.data || [];
+        return list.map((s: any) => ({
+          id: s.id,
+          title: s.title || 'Untitled Session',
+          createdAt: s.time?.created || Date.now(),
+          updatedAt: s.time?.updated,
+          projectId: s.projectID || s.projectId,
+          directory: s.location?.directory,
+          parentID: s.parentID,
+        }));
+      }
+    } catch (e: any) {
+      console.warn(`[opencodeAdapter] /api/session fallback: ${e.message}`);
+    }
+
+    return this.listSessions();
+  }
+
+  async listProjectSessions(directory: string): Promise<OpenCodeSession[]> {
+    const encoded = encodeURIComponent(directory);
+    const res = await fetch(`${this.baseUrl}/session?directory=${encoded}`, {
+      headers: this.getHeaders(directory),
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to list sessions for directory ${directory}: HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as any[];
+    return (data || []).map((s) => ({
+      id: s.id,
+      title: s.title || 'Untitled Session',
+      createdAt: s.createdAt || Date.now(),
+      updatedAt: s.updatedAt,
+      projectId: s.projectID || s.projectId,
+      directory: s.directory || directory,
+      parentID: s.parentID,
+    }));
   }
 
   async listSessions(): Promise<OpenCodeSession[]> {
@@ -80,6 +152,9 @@ export class OpenCodeAdapter {
       title: s.title || 'Untitled Session',
       createdAt: s.createdAt || Date.now(),
       updatedAt: s.updatedAt,
+      projectId: s.projectID || s.projectId,
+      directory: s.directory,
+      parentID: s.parentID,
     }));
   }
 
@@ -111,7 +186,7 @@ export class OpenCodeAdapter {
     return {};
   }
 
-  async createSession(title?: string): Promise<OpenCodeSession> {
+  async createSession(directory?: string, title?: string): Promise<OpenCodeSession> {
     const body: Record<string, any> = {};
     if (title) body.title = title;
     if (this.defaultModel) {
@@ -121,9 +196,13 @@ export class OpenCodeAdapter {
       };
     }
 
-    const res = await fetch(`${this.baseUrl}/session`, {
+    const url = directory
+      ? `${this.baseUrl}/session?directory=${encodeURIComponent(directory)}`
+      : `${this.baseUrl}/session`;
+
+    const res = await fetch(url, {
       method: 'POST',
-      headers: this.getHeaders(),
+      headers: this.getHeaders(directory),
       body: JSON.stringify(body),
     });
     if (!res.ok) {
@@ -135,22 +214,26 @@ export class OpenCodeAdapter {
       title: data.title || title || 'New Session',
       createdAt: data.createdAt || Date.now(),
       updatedAt: data.updatedAt,
+      projectId: data.projectID || data.projectId,
+      directory: data.directory || directory,
+      parentID: data.parentID,
     };
   }
 
-  async getSession(sessionId: string): Promise<{ session: OpenCodeSession; messages: SessionMessage[] }> {
+  async getSession(sessionId: string, directory?: string): Promise<{ session: OpenCodeSession; messages: SessionMessage[] }> {
     // 1. Fetch session info
     const sessionRes = await fetch(`${this.baseUrl}/session/${sessionId}`, {
-      headers: this.getHeaders(),
+      headers: this.getHeaders(directory),
     });
     if (!sessionRes.ok) {
       throw new Error(`Session ${sessionId} not found: HTTP ${sessionRes.status}`);
     }
     const sessionData = (await sessionRes.json()) as any;
+    const resolvedDir = sessionData.directory || directory;
 
     // 2. Fetch session messages
     const messagesRes = await fetch(`${this.baseUrl}/session/${sessionId}/message`, {
-      headers: this.getHeaders(),
+      headers: this.getHeaders(resolvedDir),
     });
 
     const messages: SessionMessage[] = [];
@@ -231,18 +314,21 @@ export class OpenCodeAdapter {
         title: sessionData.title || 'Untitled Session',
         createdAt: sessionData.createdAt || Date.now(),
         updatedAt: sessionData.updatedAt,
+        projectId: sessionData.projectID || sessionData.projectId,
+        directory: resolvedDir,
+        parentID: sessionData.parentID,
       },
       messages,
     };
   }
 
-  async getSessionDiff(sessionId: string): Promise<SnapshotFileDiff[]> {
+  async getSessionDiff(sessionId: string, directory?: string): Promise<SnapshotFileDiff[]> {
     let diffs: SnapshotFileDiff[] = [];
 
     // 1. Try native OpenCode diff endpoint
     try {
       const res = await fetch(`${this.baseUrl}/session/${sessionId}/diff`, {
-        headers: this.getHeaders(),
+        headers: this.getHeaders(directory),
       });
       if (res.ok) {
         const data = (await res.json()) as any[];
@@ -259,9 +345,9 @@ export class OpenCodeAdapter {
     }
 
     // 2. Discover worktree
-    let worktree = process.cwd();
+    let worktree = directory || process.cwd();
     try {
-      const project = await this.getProjectContext();
+      const project = await this.getProjectContext(directory);
       if (project.worktree) {
         worktree = project.worktree;
       }
@@ -272,7 +358,7 @@ export class OpenCodeAdapter {
     // 3. Fallback/Augment: scan session messages for touched files (write/edit/patch tools and patch parts)
     try {
       const messagesRes = await fetch(`${this.baseUrl}/session/${sessionId}/message`, {
-        headers: this.getHeaders(),
+        headers: this.getHeaders(directory),
       });
       if (messagesRes.ok) {
         const rawMessages = (await messagesRes.json()) as any[];
@@ -363,10 +449,10 @@ export class OpenCodeAdapter {
     return diffs;
   }
 
-  async getProjectContext(): Promise<ProjectContext> {
+  async getProjectContext(directory?: string): Promise<ProjectContext> {
     try {
       const res = await fetch(`${this.baseUrl}/project/current`, {
-        headers: this.getHeaders(),
+        headers: this.getHeaders(directory),
       });
       if (!res.ok) {
         return {};
@@ -386,7 +472,8 @@ export class OpenCodeAdapter {
   async sendMessage(
     sessionId: string,
     content: string,
-    model?: { providerID: string; modelID: string }
+    model?: { providerID: string; modelID: string },
+    directory?: string
   ): Promise<string> {
     const clientMessageId = `msg_${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
     const payload: Record<string, any> = {
@@ -408,7 +495,7 @@ export class OpenCodeAdapter {
     try {
       const res = await fetch(`${this.baseUrl}/session/${sessionId}/prompt_async`, {
         method: 'POST',
-        headers: this.getHeaders(),
+        headers: this.getHeaders(directory),
         body: JSON.stringify(payload),
       });
 
@@ -435,7 +522,7 @@ export class OpenCodeAdapter {
     // Fallback to /message
     const res = await fetch(`${this.baseUrl}/session/${sessionId}/message`, {
       method: 'POST',
-      headers: this.getHeaders(),
+      headers: this.getHeaders(directory),
       body: JSON.stringify(payload),
     });
 
@@ -474,10 +561,17 @@ export class OpenCodeAdapter {
         headers['Authorization'] = this.authHeader;
       }
 
-      const res = await fetch(`${this.baseUrl}/event`, {
+      let res = await fetch(`${this.baseUrl}/api/event`, {
         headers,
         signal: this.eventAbortController.signal,
-      });
+      }).catch(() => null);
+
+      if (!res || !res.ok) {
+        res = await fetch(`${this.baseUrl}/event`, {
+          headers,
+          signal: this.eventAbortController.signal,
+        });
+      }
 
       if (!res.ok || !res.body) {
         this.isListeningEvents = false;
@@ -504,7 +598,14 @@ export class OpenCodeAdapter {
             if (dataStr) {
               try {
                 const parsed = JSON.parse(dataStr);
-                onEvent(parsed);
+                const eventObj = {
+                  id: parsed.id,
+                  type: parsed.type,
+                  properties: parsed.properties || parsed.data || {},
+                  location: parsed.location,
+                  directory: parsed.location?.directory,
+                };
+                onEvent(eventObj);
               } catch {
                 // Ignore SSE heartbeat/keep-alive lines
               }
@@ -613,10 +714,10 @@ export class OpenCodeAdapter {
   // ==========================================
   // Session Abort
   // ==========================================
-  async abortSession(sessionId: string): Promise<boolean> {
+  async abortSession(sessionId: string, directory?: string): Promise<boolean> {
     const res = await fetch(`${this.baseUrl}/session/${encodeURIComponent(sessionId)}/abort`, {
       method: 'POST',
-      headers: this.getHeaders(),
+      headers: this.getHeaders(directory),
       body: JSON.stringify({}),
     });
     return res.ok;
@@ -686,10 +787,10 @@ export class OpenCodeAdapter {
   // ==========================================
   // Todos
   // ==========================================
-  async getTodos(sessionId: string): Promise<TodoItem[]> {
+  async getTodos(sessionId: string, directory?: string): Promise<TodoItem[]> {
     try {
       const res = await fetch(`${this.baseUrl}/session/${encodeURIComponent(sessionId)}/todo`, {
-        headers: this.getHeaders(),
+        headers: this.getHeaders(directory),
       });
       if (!res.ok) {
         return [];
