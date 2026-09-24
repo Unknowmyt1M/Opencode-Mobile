@@ -110,8 +110,26 @@ export class RemoteAgent {
     return ptyWs;
   }
 
-  private pendingPermissions: Map<string, PermissionItem> = new Map();
-  private pendingQuestions: Map<string, QuestionItem> = new Map();
+  private sessionPermissions: Map<string, Map<string, PermissionItem>> = new Map();
+  private sessionQuestions: Map<string, Map<string, QuestionItem>> = new Map();
+
+  private getSessionPermissions(sessionId: string): Map<string, PermissionItem> {
+    let map = this.sessionPermissions.get(sessionId);
+    if (!map) {
+      map = new Map();
+      this.sessionPermissions.set(sessionId, map);
+    }
+    return map;
+  }
+
+  private getSessionQuestions(sessionId: string): Map<string, QuestionItem> {
+    let map = this.sessionQuestions.get(sessionId);
+    if (!map) {
+      map = new Map();
+      this.sessionQuestions.set(sessionId, map);
+    }
+    return map;
+  }
 
   private nextSessionSequence(sessionId: string): number {
     const current = this.sessionSequences.get(sessionId) ?? 0;
@@ -124,16 +142,8 @@ export class RemoteAgent {
     this.sessionRuntimes.delete(sessionId);
     this.sessionTurns.delete(sessionId);
     this.sessionSequences.delete(sessionId);
-    for (const [id, perm] of Array.from(this.pendingPermissions.entries())) {
-      if (perm.sessionID === sessionId) {
-        this.pendingPermissions.delete(id);
-      }
-    }
-    for (const [id, q] of Array.from(this.pendingQuestions.entries())) {
-      if (q.sessionID === sessionId) {
-        this.pendingQuestions.delete(id);
-      }
-    }
+    this.sessionPermissions.delete(sessionId);
+    this.sessionQuestions.delete(sessionId);
   }
 
   private sessionTurns: Map<
@@ -350,7 +360,7 @@ export class RemoteAgent {
         sessionID: sessionId,
         time: props.time || Date.now(),
       };
-      this.pendingPermissions.set(permItem.id, permItem);
+      this.getSessionPermissions(sessionId).set(permItem.id, permItem);
       const permMsg = createMessage('PERMISSION_REQUEST', {
         ...permItem,
         deviceId: this.config.deviceId,
@@ -359,9 +369,11 @@ export class RemoteAgent {
     } else if (eventType === 'permission.replied' || eventType === 'permission.v2.replied') {
       const permId = props.id || props.requestID || props.requestId;
       if (permId) {
-        this.pendingPermissions.delete(permId);
+        this.getSessionPermissions(sessionId).delete(permId);
       }
-      if (this.pendingPermissions.size === 0 && this.pendingQuestions.size === 0 && rt.status === 'waiting_permission') {
+      const sPerms = this.getSessionPermissions(sessionId);
+      const sQs = this.getSessionQuestions(sessionId);
+      if (sPerms.size === 0 && sQs.size === 0 && rt.status === 'waiting_permission') {
         rt.status = 'busy';
       }
     } else if (eventType === 'question.asked') {
@@ -372,29 +384,39 @@ export class RemoteAgent {
         questions: props.questions || props.question,
         time: props.time || Date.now(),
       };
-      this.pendingQuestions.set(qItem.id, qItem);
+      this.getSessionQuestions(sessionId).set(qItem.id, qItem);
     } else if (eventType === 'question.replied' || eventType === 'question.rejected') {
       const qId = props.id || props.requestID || props.requestId;
       if (qId) {
-        this.pendingQuestions.delete(qId);
+        this.getSessionQuestions(sessionId).delete(qId);
       }
-      if (this.pendingPermissions.size === 0 && this.pendingQuestions.size === 0 && rt.status === 'waiting_question') {
+      const sPerms = this.getSessionPermissions(sessionId);
+      const sQs = this.getSessionQuestions(sessionId);
+      if (sPerms.size === 0 && sQs.size === 0 && rt.status === 'waiting_question') {
         rt.status = 'busy';
       }
     } else if (eventType === 'session.deleted') {
-      this.cleanupSessionRuntime(sessionId);
+      // NOTE: Do not delete session runtime/sequences immediately before emitting the event!
+      // Emit the terminal event with a continuing monotonic sequence, then clean up below.
     } else if (
       (eventType === 'message.part.updated' || eventType === 'message.part') &&
       props.part
     ) {
       const p = props.part;
-      const pIdx = rt.parts.findIndex(
-        (existing) => existing.id === p.id || (p.callID && existing.callID === p.callID)
-      );
-      if (pIdx >= 0) {
-        rt.parts[pIdx] = { ...rt.parts[pIdx], ...p };
+      const partMessageId = p.messageID || p.messageId || props.messageID || props.messageId;
+      const activeMessageId = turn.messageId || rt.assistantMessageId;
+      // Strict part ownership: parts must not bleed into an active turn if message ID belongs to a different turn
+      if (partMessageId && activeMessageId && partMessageId !== activeMessageId) {
+        // Discard bleed from another message into active turn runtime parts
       } else {
-        rt.parts.push(p);
+        const pIdx = rt.parts.findIndex(
+          (existing) => existing.id === p.id || (p.callID && existing.callID === p.callID)
+        );
+        if (pIdx >= 0) {
+          rt.parts[pIdx] = { ...rt.parts[pIdx], ...p };
+        } else {
+          rt.parts.push(p);
+        }
       }
     } else if (eventType === 'session.error') {
       rt.status = 'error';
@@ -430,6 +452,11 @@ export class RemoteAgent {
       eventId: props.id || evt.id,
     });
     this.sendMessage(opencodeEvt);
+
+    // Terminal cleanup after broadcasting terminal event with valid sequence
+    if (eventType === 'session.deleted') {
+      this.cleanupSessionRuntime(sessionId);
+    }
   }
 
   start() {
@@ -691,12 +718,8 @@ export class RemoteAgent {
               rt.todos = [];
             }
 
-            const sessionPerms = Array.from(this.pendingPermissions.values()).filter(
-              (p) => !p.sessionID || p.sessionID === msg.payload.sessionId
-            );
-            const sessionQuestions = Array.from(this.pendingQuestions.values()).filter(
-              (q) => !q.sessionID || q.sessionID === msg.payload.sessionId
-            );
+            const sessionPerms = Array.from(this.getSessionPermissions(msg.payload.sessionId).values());
+            const sessionQuestions = Array.from(this.getSessionQuestions(msg.payload.sessionId).values());
 
             const snapshotSeq = this.nextSessionSequence(msg.payload.sessionId);
             rt.lastEventSequence = snapshotSeq;
@@ -1031,7 +1054,25 @@ export class RemoteAgent {
           try {
             const success = await this.adapter.replyPermission(msg.payload.requestId, msg.payload.reply);
             if (success) {
-              this.pendingPermissions.delete(msg.payload.requestId);
+              const reqId = msg.payload.requestId;
+              let targetSessionId = (msg.payload as any).sessionId;
+              if (!targetSessionId) {
+                for (const [sId, map] of this.sessionPermissions.entries()) {
+                  if (map.has(reqId)) {
+                    targetSessionId = sId;
+                    break;
+                  }
+                }
+              }
+              if (targetSessionId) {
+                this.getSessionPermissions(targetSessionId).delete(reqId);
+                const sPerms = this.getSessionPermissions(targetSessionId);
+                const sQs = this.getSessionQuestions(targetSessionId);
+                const rt = this.sessionRuntimes.get(targetSessionId);
+                if (sPerms.size === 0 && sQs.size === 0 && rt && rt.status === 'waiting_permission') {
+                  rt.status = 'busy';
+                }
+              }
             }
             this.sendMessage(
               createMessage('PERMISSION_REPLY_RESULT', {
@@ -1094,7 +1135,25 @@ export class RemoteAgent {
           try {
             const success = await this.adapter.replyQuestion(msg.payload.requestId, msg.payload.answers);
             if (success) {
-              this.pendingQuestions.delete(msg.payload.requestId);
+              const reqId = msg.payload.requestId;
+              let targetSessionId = msg.payload.sessionId;
+              if (!targetSessionId) {
+                for (const [sId, map] of this.sessionQuestions.entries()) {
+                  if (map.has(reqId)) {
+                    targetSessionId = sId;
+                    break;
+                  }
+                }
+              }
+              if (targetSessionId) {
+                this.getSessionQuestions(targetSessionId).delete(reqId);
+                const sPerms = this.getSessionPermissions(targetSessionId);
+                const sQs = this.getSessionQuestions(targetSessionId);
+                const rt = this.sessionRuntimes.get(targetSessionId);
+                if (sPerms.size === 0 && sQs.size === 0 && rt && rt.status === 'waiting_question') {
+                  rt.status = 'busy';
+                }
+              }
             }
             this.sendMessage(
               createMessage('QUESTION_REPLY_RESULT', {

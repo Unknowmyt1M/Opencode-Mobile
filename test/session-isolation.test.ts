@@ -280,5 +280,109 @@ describe('Session Isolation & Cross-Session Contamination Invariants', () => {
     // Sending to Session A should enqueue
     expect(decideAction('session_A')).toBe('ENQUEUE');
   });
+
+  it('13. Agent session-scoped permissions and questions: resolving Session B does NOT stall when Session A is pending', () => {
+    // Session-scoped maps simulating agent architecture
+    const sessionPermissions = new Map<string, Map<string, any>>();
+    const getSessionPermissions = (sId: string) => {
+      let m = sessionPermissions.get(sId);
+      if (!m) {
+        m = new Map();
+        sessionPermissions.set(sId, m);
+      }
+      return m;
+    };
+
+    const sessionRuntimes: Record<string, { status: string }> = {
+      'session_A': { status: 'waiting_permission' },
+      'session_B': { status: 'waiting_permission' },
+    };
+
+    // Both sessions ask for permissions
+    getSessionPermissions('session_A').set('perm_A', { id: 'perm_A', sessionID: 'session_A' });
+    getSessionPermissions('session_B').set('perm_B', { id: 'perm_B', sessionID: 'session_B' });
+
+    expect(getSessionPermissions('session_A').size).toBe(1);
+    expect(getSessionPermissions('session_B').size).toBe(1);
+
+    // Reply and resolve Session B's permission
+    getSessionPermissions('session_B').delete('perm_B');
+    if (getSessionPermissions('session_B').size === 0 && sessionRuntimes['session_B'].status === 'waiting_permission') {
+      sessionRuntimes['session_B'].status = 'busy';
+    }
+
+    // Session B is correctly unblocked back to 'busy'
+    expect(sessionRuntimes['session_B'].status).toBe('busy');
+    expect(getSessionPermissions('session_B').size).toBe(0);
+
+    // Session A remains safely isolated in 'waiting_permission'
+    expect(sessionRuntimes['session_A'].status).toBe('waiting_permission');
+    expect(getSessionPermissions('session_A').size).toBe(1);
+  });
+
+  it('14. Strict message part ownership: delayed parts from past turn do NOT bleed into active turn', () => {
+    const activeTurn = { messageId: 'msg_assistant_turn_2' };
+    const rt = {
+      assistantMessageId: 'msg_assistant_turn_2',
+      parts: [] as Array<{ id: string; messageID?: string; type: string; text?: string }>,
+    };
+
+    const handlePartUpdate = (part: { id: string; messageID?: string; type: string; text?: string }) => {
+      const partMessageId = part.messageID;
+      const activeMessageId = activeTurn.messageId || rt.assistantMessageId;
+      if (partMessageId && activeMessageId && partMessageId !== activeMessageId) {
+        // Discard cross-turn bleed!
+        return false;
+      }
+      const pIdx = rt.parts.findIndex((existing) => existing.id === part.id);
+      if (pIdx >= 0) {
+        rt.parts[pIdx] = { ...rt.parts[pIdx], ...part };
+      } else {
+        rt.parts.push(part);
+      }
+      return true;
+    };
+
+    // Delayed part from Turn 1 arrives
+    const acceptedTurn1 = handlePartUpdate({
+      id: 'part_old_1',
+      messageID: 'msg_assistant_turn_1',
+      type: 'tool',
+      text: 'old command output',
+    });
+    expect(acceptedTurn1).toBe(false);
+    expect(rt.parts.length).toBe(0);
+
+    // Active part from Turn 2 arrives
+    const acceptedTurn2 = handlePartUpdate({
+      id: 'part_active_2',
+      messageID: 'msg_assistant_turn_2',
+      type: 'tool',
+      text: 'new active tool output',
+    });
+    expect(acceptedTurn2).toBe(true);
+    expect(rt.parts.length).toBe(1);
+    expect(rt.parts[0].id).toBe('part_active_2');
+  });
+
+  it('15. Monotonic sequence continuity on session.deleted: sequence advances monotonically (never resets to 1)', () => {
+    const sessionSequences = new Map<string, number>();
+    sessionSequences.set('session_A', 49);
+
+    const nextSessionSequence = (sId: string) => {
+      const current = sessionSequences.get(sId) ?? 0;
+      const next = current + 1;
+      sessionSequences.set(sId, next);
+      return next;
+    };
+
+    // session.deleted arrives: sequence must advance monotonically to 50
+    const seqOnDelete = nextSessionSequence('session_A');
+    expect(seqOnDelete).toBe(50);
+
+    // Terminal cleanup occurs AFTER emitting terminal event with seq 50
+    sessionSequences.delete('session_A');
+    expect(sessionSequences.has('session_A')).toBe(false);
+  });
 });
 

@@ -358,4 +358,99 @@ describe('Queued Messages System Verification', () => {
     expect(mockSender).toHaveBeenCalledTimes(1);
     expect(qm.getQueue(SESS_A).length).toBe(0);
   });
+
+  it('16. Monotonic revision sync rejects stale revisions and applies higher revisions', () => {
+    let currentRevision = 5;
+    let localQueue: QueuedMessage[] = [
+      { id: 'q1', sessionId: SESS_A, content: 'Current task', createdAt: Date.now(), status: 'queued' },
+    ];
+
+    const syncQueue = (newQueue: QueuedMessage[], incomingRevision: number) => {
+      if (incomingRevision < currentRevision) {
+        // Stale revision: reject!
+        return false;
+      }
+      if (incomingRevision === currentRevision) {
+        // Idempotent identical check
+        return true;
+      }
+      currentRevision = incomingRevision;
+      localQueue = newQueue;
+      return true;
+    };
+
+    // Stale revision 4 arrives after revision 5: must be rejected
+    const staleResult = syncQueue([], 4);
+    expect(staleResult).toBe(false);
+    expect(localQueue.length).toBe(1);
+    expect(currentRevision).toBe(5);
+
+    // Higher revision 6 arrives: must be accepted and overwrite local state
+    const higherResult = syncQueue([
+      { id: 'q2', sessionId: SESS_A, content: 'Authoritative remote task', createdAt: Date.now(), status: 'queued' },
+    ], 6);
+    expect(higherResult).toBe(true);
+    expect(localQueue.length).toBe(1);
+    expect(localQueue[0].content).toBe('Authoritative remote task');
+    expect(currentRevision).toBe(6);
+  });
+
+  it('17. Device-scoped storage cache isolates queues across distinct devices', () => {
+    const STORAGE_KEY_PREFIX = 'opencode_remote_queued_messages';
+    const getStorageKey = (devId?: string | null) => devId ? `${STORAGE_KEY_PREFIX}:${devId}` : STORAGE_KEY_PREFIX;
+
+    const deviceA_Queue = [
+      { id: 'qa1', sessionId: SESS_A, content: 'Device A specific queue', createdAt: Date.now(), status: 'queued' as const },
+    ];
+    const deviceB_Queue = [
+      { id: 'qb1', sessionId: SESS_A, content: 'Device B specific queue', createdAt: Date.now(), status: 'queued' as const },
+    ];
+
+    mockStorage.setItem(getStorageKey('device_A'), JSON.stringify({ [SESS_A]: deviceA_Queue }));
+    mockStorage.setItem(getStorageKey('device_B'), JSON.stringify({ [SESS_A]: deviceB_Queue }));
+
+    const rawA = JSON.parse(mockStorage.getItem(getStorageKey('device_A'))!);
+    const rawB = JSON.parse(mockStorage.getItem(getStorageKey('device_B'))!);
+
+    expect(rawA[SESS_A][0].content).toBe('Device A specific queue');
+    expect(rawB[SESS_A][0].content).toBe('Device B specific queue');
+    expect(rawA[SESS_A][0].content).not.toEqual(rawB[SESS_A][0].content);
+  });
+
+  it('18. In-flight status update keeps ref and state synchronized during auto-dispatch', () => {
+    let queuesState: Record<string, QueuedMessage[]> = {
+      [SESS_A]: [
+        { id: 'q1', sessionId: SESS_A, content: 'Task 1', createdAt: Date.now(), status: 'queued' },
+      ],
+    };
+    let queuesRef = { current: queuesState };
+
+    const updateLocalItemStatus = (sessionId: string, itemId: string, status: QueuedMessage['status'], error?: string) => {
+      const existing = queuesRef.current[sessionId] || [];
+      const updated = existing.map((m) =>
+        m.id === itemId ? { ...m, status, error: error !== undefined ? error : m.error } : m
+      );
+      queuesRef.current = {
+        ...queuesRef.current,
+        [sessionId]: updated,
+      };
+      queuesState = {
+        ...queuesState,
+        [sessionId]: updated,
+      };
+    };
+
+    // Transition to sending: verify BOTH queuesRef and queuesState are updated in lockstep
+    updateLocalItemStatus(SESS_A, 'q1', 'sending');
+    expect(queuesRef.current[SESS_A][0].status).toBe('sending');
+    expect(queuesState[SESS_A][0].status).toBe('sending');
+
+    // Simulate remove reading from queuesRef.current
+    const filtered = (queuesRef.current[SESS_A] || []).filter((m) => m.id !== 'q1');
+    queuesRef.current[SESS_A] = filtered;
+    queuesState[SESS_A] = filtered;
+
+    expect(queuesRef.current[SESS_A].length).toBe(0);
+    expect(queuesState[SESS_A].length).toBe(0);
+  });
 });

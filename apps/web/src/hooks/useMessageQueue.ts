@@ -1,11 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { QueuedMessage } from '../types/queue';
 
-const STORAGE_KEY = 'opencode_remote_queued_messages';
+const STORAGE_KEY_PREFIX = 'opencode_remote_queued_messages';
 
-function loadQueuesFromStorage(): Record<string, QueuedMessage[]> {
+function getStorageKey(deviceId?: string | null): string {
+  return deviceId ? `${STORAGE_KEY_PREFIX}:${deviceId}` : STORAGE_KEY_PREFIX;
+}
+
+function loadQueuesFromStorage(deviceId?: string | null): Record<string, QueuedMessage[]> {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(getStorageKey(deviceId));
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (typeof parsed === 'object' && parsed !== null) {
@@ -26,9 +30,9 @@ function loadQueuesFromStorage(): Record<string, QueuedMessage[]> {
   }
 }
 
-function saveQueuesToStorage(queues: Record<string, QueuedMessage[]>) {
+function saveQueuesToStorage(deviceId: string | null | undefined, queues: Record<string, QueuedMessage[]>) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(queues));
+    localStorage.setItem(getStorageKey(deviceId), JSON.stringify(queues));
   } catch (err) {
     console.warn('Failed to save queued messages to localStorage:', err);
   }
@@ -61,8 +65,11 @@ export function useMessageQueue({
   onSendMessage,
   onQueueUpdate,
 }: UseMessageQueueOptions) {
-  const [queues, setQueues] = useState<Record<string, QueuedMessage[]>>(loadQueuesFromStorage);
+  const [queues, setQueues] = useState<Record<string, QueuedMessage[]>>(() =>
+    loadQueuesFromStorage(selectedDeviceId)
+  );
   const queuesRef = useRef<Record<string, QueuedMessage[]>>(queues);
+  const currentDeviceIdRef = useRef<string | null | undefined>(selectedDeviceId);
   const [editingItem, setEditingItem] = useState<{ id: string; sessionId: string; content: string } | null>(null);
 
   const onQueueUpdateRef = useRef(onQueueUpdate);
@@ -74,19 +81,52 @@ export function useMessageQueue({
   const dispatchingSessionsRef = useRef<Set<string>>(new Set());
   const prevStreamingBySessionRef = useRef<Record<string, boolean>>({});
 
-  // Best-effort cache in localStorage (not authoritative)
+  // Re-hydrate device-scoped queue cache when selectedDeviceId changes
   useEffect(() => {
-    saveQueuesToStorage(queues);
-  }, [queues]);
+    if (selectedDeviceId !== currentDeviceIdRef.current) {
+      currentDeviceIdRef.current = selectedDeviceId;
+      const cached = loadQueuesFromStorage(selectedDeviceId);
+      queuesRef.current = cached;
+      setQueues(cached);
+      revisionsRef.current = {};
+    }
+  }, [selectedDeviceId]);
+
+  // Persist device-scoped cache to localStorage (best-effort, secondary to Relay authority)
+  useEffect(() => {
+    saveQueuesToStorage(selectedDeviceId, queues);
+  }, [selectedDeviceId, queues]);
 
   // Current session's queue
   const currentQueue = activeSessionId ? queues[activeSessionId] || [] : [];
 
-  // Sync external queue from backend / peer clients without triggering local broadcast loop
+  // Sync external queue from backend / peer clients with strict monotonic revision checking
   const syncQueue = useCallback((sessionId: string, newQueue: QueuedMessage[], revision?: number) => {
     if (typeof revision === 'number') {
+      const currentRev = revisionsRef.current[sessionId] ?? 0;
+      if (revision < currentRev) {
+        console.warn(
+          `[useMessageQueue] Stale queue sync rejected for session ${sessionId}: incoming rev ${revision} < current rev ${currentRev}`
+        );
+        return;
+      }
+      if (revision === currentRev) {
+        const curr = queuesRef.current[sessionId] || [];
+        if (
+          curr.length === newQueue.length &&
+          curr.every(
+            (m, idx) =>
+              m.id === newQueue[idx]?.id &&
+              m.content === newQueue[idx]?.content &&
+              m.status === newQueue[idx]?.status
+          )
+        ) {
+          return;
+        }
+      }
       revisionsRef.current[sessionId] = revision;
     }
+
     queuesRef.current = {
       ...queuesRef.current,
       [sessionId]: newQueue,
@@ -260,6 +300,25 @@ export function useMessageQueue({
     [dispatchMutation]
   );
 
+  // Helper to synchronously update item status in both queuesRef and React state
+  const updateLocalItemStatus = useCallback(
+    (sessionId: string, itemId: string, status: QueuedMessage['status'], error?: string) => {
+      const existing = queuesRef.current[sessionId] || [];
+      const updated = existing.map((m) =>
+        m.id === itemId ? { ...m, status, error: error !== undefined ? error : m.error } : m
+      );
+      queuesRef.current = {
+        ...queuesRef.current,
+        [sessionId]: updated,
+      };
+      setQueues((prev) => ({
+        ...prev,
+        [sessionId]: updated,
+      }));
+    },
+    []
+  );
+
   // Automatic dispatch when turn completes for ANY session (foreground or background):
   // Watch for isStreaming transitioning from true -> false per session
   useEffect(() => {
@@ -284,13 +343,8 @@ export function useMessageQueue({
         if (nextItem && !dispatchingSessionsRef.current.has(sId)) {
           dispatchingSessionsRef.current.add(sId);
 
-          // Mark as sending
-          setQueues((prev) => ({
-            ...prev,
-            [sId]: (prev[sId] || []).map((m) =>
-              m.id === nextItem.id ? { ...m, status: 'sending' } : m
-            ),
-          }));
+          // Mark as sending synchronously in both ref and state
+          updateLocalItemStatus(sId, nextItem.id, 'sending');
 
           // Execute send through canonical pathway
           Promise.resolve(
@@ -307,18 +361,12 @@ export function useMessageQueue({
             })
             .catch((err) => {
               console.error(`Failed to dispatch queued message for session ${sId}:`, err);
-              setQueues((prev) => ({
-                ...prev,
-                [sId]: (prev[sId] || []).map((m) =>
-                  m.id === nextItem.id
-                    ? {
-                        ...m,
-                        status: 'failed',
-                        error: err?.message || 'Failed to dispatch queued message',
-                      }
-                    : m
-                ),
-              }));
+              updateLocalItemStatus(
+                sId,
+                nextItem.id,
+                'failed',
+                err?.message || 'Failed to dispatch queued message'
+              );
             })
             .finally(() => {
               dispatchingSessionsRef.current.delete(sId);
@@ -326,7 +374,7 @@ export function useMessageQueue({
         }
       }
     }
-  }, [isStreaming, sessionStreamingStatus, activeSessionId, selectedDeviceId, queues, onSendMessage, remove]);
+  }, [isStreaming, sessionStreamingStatus, activeSessionId, selectedDeviceId, queues, onSendMessage, remove, updateLocalItemStatus]);
 
   return {
     queues,
