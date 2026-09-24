@@ -125,8 +125,16 @@ export default function App() {
         if (!activeSessionRef.current && loadedSessions && loadedSessions.length > 0) {
           // If any session is currently busy/streaming on PC, mirror that session first!
           const busySession = loadedSessions.find((s) => sessionStatuses[s.id] === 'busy');
-          const targetSession = busySession || loadedSessions[0];
-          openSession(selectedDevice.deviceId, targetSession.id);
+          let savedLastSessionId: string | null = null;
+          try {
+            savedLastSessionId = localStorage.getItem(`opencode_last_session_${selectedDevice.deviceId}`);
+          } catch {}
+          const targetSession =
+            busySession ||
+            (savedLastSessionId ? loadedSessions.find((s) => s.id === savedLastSessionId) : null);
+          if (targetSession) {
+            openSession(selectedDevice.deviceId, targetSession.id);
+          }
         }
       });
       fetchModels();
@@ -142,6 +150,7 @@ export default function App() {
     fetchPtys,
     fetchPermissions,
     openSession,
+    sessionStatuses,
   ]);
 
   const handleCreateSessionSubmit = async (e: React.FormEvent) => {
@@ -188,12 +197,16 @@ export default function App() {
           {/* Top Brand & Machine Selector */}
           <div className="p-3 border-b border-slate-800/80 space-y-3">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center text-white shadow-md shadow-indigo-600/30">
+              <div
+                className="flex items-center gap-2 cursor-pointer group"
+                onClick={() => closeActiveSession()}
+                title="Return to Dashboard / New Chat"
+              >
+                <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center text-white shadow-md shadow-indigo-600/30 group-hover:bg-indigo-500 transition-colors">
                   <TerminalIcon className="w-4 h-4" />
                 </div>
                 <div>
-                  <h1 className="text-xs font-bold tracking-tight text-white">OpenCode Mobile</h1>
+                  <h1 className="text-xs font-bold tracking-tight text-white group-hover:text-indigo-200 transition-colors">OpenCode Mobile</h1>
                   <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-mono">
                     {connectionState === 'CONNECTED' ? (
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />

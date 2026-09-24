@@ -92,14 +92,26 @@ export function useRelay(relayWsUrl?: string) {
 
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<{ providerID: string; modelID: string } | null>(null);
+  const defaultModelRef = useRef<{ providerID: string; modelID: string } | null>(null);
+  const sessionModelsRef = useRef<Map<string, { providerID: string; modelID: string }>>(new Map());
+
+  const handleSelectModel = useCallback((model: { providerID: string; modelID: string } | null) => {
+    setSelectedModel(model);
+    if (activeSessionRef.current?.session?.id && model) {
+      sessionModelsRef.current.set(activeSessionRef.current.session.id, model);
+    }
+  }, []);
 
   const [permissions, setPermissions] = useState<PermissionItem[]>([]);
   const [sessionStatuses, setSessionStatuses] = useState<Record<string, string>>({});
   const fetchTodosRef = useRef<((deviceId: string, sessionId: string) => void) | null>(null);
   const fetchSessionsRef = useRef<((deviceId: string) => Promise<any>) | null>(null);
   const reconcileSessionRef = useRef<((deviceId: string, sessionId: string) => Promise<any>) | null>(null);
-  const syncQueueRef = useRef<(sessionId: string, queue: QueuedMessage[]) => void>(() => {});
+  const syncQueueRef = useRef<(sessionId: string, queue: QueuedMessage[], revision?: number) => void>(() => {});
   const lastSequenceRef = useRef<Map<string, number>>(new Map());
+  const agentEpochsRef = useRef<Map<string, string>>(new Map()); // sessionId -> agentInstanceId
+  const reconciliationInFlightRef = useRef<Map<string, { promise: Promise<any>; generation: number }>>(new Map());
+  const lastViewedSessionByDeviceRef = useRef<Record<string, string>>({});
 
   const [isLoadingSession, setIsLoadingSession] = useState<boolean>(false);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
@@ -117,21 +129,45 @@ export function useRelay(relayWsUrl?: string) {
   // Keep refs in sync to eliminate stale closures in WebSocket callbacks
   useEffect(() => {
     activeSessionRef.current = activeSession;
+    if (selectedDeviceIdRef.current && activeSession?.session?.id) {
+      lastViewedSessionByDeviceRef.current[selectedDeviceIdRef.current] = activeSession.session.id;
+      try {
+        localStorage.setItem(`opencode_last_session_${selectedDeviceIdRef.current}`, activeSession.session.id);
+      } catch {}
+    }
   }, [activeSession]);
 
   const prevDeviceIdRef = useRef<string | null>(selectedDeviceId);
   useEffect(() => {
     if (prevDeviceIdRef.current && prevDeviceIdRef.current !== selectedDeviceId) {
-      // Switched to a different device - clean device-specific active states to avoid cross-device leakage
-      setActiveSession(null);
+      // Switched to a different device - reset auxiliary states but avoid destructive wipe to prevent white flash
       setActiveDiffFile(null);
       setActivePtyId(null);
       setSelectedModel(null);
       setProjectContext(null);
+
+      if (selectedDeviceId && fetchSessionsRef.current) {
+        fetchSessionsRef.current(selectedDeviceId).then((loadedSessions: OpenCodeSession[]) => {
+          if (!loadedSessions || loadedSessions.length === 0) {
+            setActiveSession(null);
+            return;
+          }
+          const prevViewedId = lastViewedSessionByDeviceRef.current[selectedDeviceId];
+          const busySession = loadedSessions.find((s) => sessionStatuses[s.id] === 'busy');
+          const targetSession =
+            (prevViewedId && loadedSessions.find((s) => s.id === prevViewedId)) ||
+            busySession ||
+            loadedSessions[0];
+
+          if (targetSession && reconcileSessionRef.current) {
+            reconcileSessionRef.current(selectedDeviceId, targetSession.id);
+          }
+        });
+      }
     }
     prevDeviceIdRef.current = selectedDeviceId;
     selectedDeviceIdRef.current = selectedDeviceId;
-  }, [selectedDeviceId]);
+  }, [selectedDeviceId, sessionStatuses]);
 
   // Per-session RAF streaming delta buffers
   const sessionDeltaBuffersRef = useRef<
@@ -151,19 +187,46 @@ export function useRelay(relayWsUrl?: string) {
   );
 
   // Authoritative event sequence tracking & gap-triggered reconciliation
-  const handleEventSequence = useCallback((sessionId: string, seq?: number) => {
-    if (typeof seq !== 'number') return;
-    const last = lastSequenceRef.current.get(sessionId);
-    if (last !== undefined && seq > last + 1) {
-      console.warn(
-        `[useRelay] Event sequence gap detected for session ${sessionId}: expected ${last + 1}, received ${seq}. Triggering authoritative snapshot reconciliation.`
-      );
-      if (activeSessionRef.current?.session?.id === sessionId && selectedDeviceIdRef.current) {
-        reconcileSessionRef.current?.(selectedDeviceIdRef.current, sessionId);
+  const handleEventSequence = useCallback(
+    (sessionId: string, seq?: number, agentInstanceId?: string) => {
+      if (typeof seq !== 'number') return;
+
+      if (agentInstanceId) {
+        const currentEpoch = agentEpochsRef.current.get(sessionId);
+        if (currentEpoch && currentEpoch !== agentInstanceId) {
+          // Agent restarted: reset sequence cursor for this new epoch without false alarm
+          console.log(
+            `[useRelay] Agent restarted (epoch ${currentEpoch} -> ${agentInstanceId}) for session ${sessionId}. Resetting sequence anchor.`
+          );
+          agentEpochsRef.current.set(sessionId, agentInstanceId);
+          lastSequenceRef.current.set(sessionId, seq);
+          return;
+        }
+        agentEpochsRef.current.set(sessionId, agentInstanceId);
       }
-    }
-    lastSequenceRef.current.set(sessionId, seq);
-  }, []);
+
+      const last = lastSequenceRef.current.get(sessionId);
+      if (last !== undefined && seq > last + 1) {
+        console.warn(
+          `[useRelay] Event sequence gap detected for session ${sessionId}: expected ${last + 1}, received ${seq}. Triggering authoritative snapshot reconciliation.`
+        );
+        if (activeSessionRef.current?.session?.id === sessionId && selectedDeviceIdRef.current) {
+          const deviceId = selectedDeviceIdRef.current;
+          if (!reconciliationInFlightRef.current.has(sessionId)) {
+            const prom = reconcileSessionRef.current?.(deviceId, sessionId);
+            if (prom) {
+              reconciliationInFlightRef.current.set(sessionId, { promise: prom, generation: seq });
+              prom.finally(() => {
+                reconciliationInFlightRef.current.delete(sessionId);
+              });
+            }
+          }
+        }
+      }
+      lastSequenceRef.current.set(sessionId, seq);
+    },
+    []
+  );
 
   // Derived active session execution state
   const currentActiveSessionId = activeSession?.session?.id;
@@ -451,7 +514,6 @@ export function useRelay(relayWsUrl?: string) {
               const session = payload.session;
               const rawMessages = payload.messages || [];
               const runtime = payload.runtime;
-              const queue = payload.queue;
               if (!session) break;
 
               // Stale response guard: Ignore if user switched to another session while this was in flight
@@ -462,9 +524,27 @@ export function useRelay(relayWsUrl?: string) {
                 break;
               }
 
-              // Ingest authoritative session queue from Relay
-              if (queue && Array.isArray(queue)) {
-                syncQueueRef.current(session.id, queue);
+              // Ingest agent epoch
+              if (runtime?.agentInstanceId) {
+                agentEpochsRef.current.set(session.id, runtime.agentInstanceId);
+              }
+
+              // Snapshot sequence guard: prevent stale snapshot from regressing live streaming state
+              const snapshotSeq = runtime?.snapshotSequence;
+              const currentLastSeq = lastSequenceRef.current.get(session.id);
+              const isSnapshotStale =
+                typeof snapshotSeq === 'number' &&
+                typeof currentLastSeq === 'number' &&
+                currentLastSeq > snapshotSeq;
+
+              if (typeof snapshotSeq === 'number') {
+                if (!isSnapshotStale) {
+                  lastSequenceRef.current.set(session.id, snapshotSeq);
+                }
+              } else if (typeof runtime?.lastEventSequence === 'number') {
+                if (!isSnapshotStale) {
+                  lastSequenceRef.current.set(session.id, runtime.lastEventSequence);
+                }
               }
 
               const isStreaming = Boolean(runtime?.isStreaming || payload.isStreaming);
@@ -474,9 +554,17 @@ export function useRelay(relayWsUrl?: string) {
               const diffs = runtime?.diffs || payload.diffs || [];
               const sessionTodos = runtime?.todos || payload.todos || [];
 
+              // Ingest multi-permissions
+              if (Array.isArray(runtime?.pendingPermissions)) {
+                setPermissions((prev) => {
+                  const others = prev.filter((p) => p.sessionID && p.sessionID !== session.id);
+                  return [...others, ...runtime.pendingPermissions];
+                });
+              }
+
               // Authoritative in-flight message hydration
               let mergedMessages = [...rawMessages];
-              if (isStreaming && activeMsgId) {
+              if (!isSnapshotStale && isStreaming && activeMsgId) {
                 const existingIdx = mergedMessages.findIndex((m) => m.id === activeMsgId);
                 if (existingIdx >= 0) {
                   mergedMessages[existingIdx] = {
@@ -504,33 +592,61 @@ export function useRelay(relayWsUrl?: string) {
                 messages: mergedMessages,
               });
 
-              updateSessionRuntime(session.id, (prev) => ({
-                ...prev,
-                isStreaming,
-                isWaitingForResponse: false,
-                activeMessageId: activeMsgId || prev.activeMessageId,
-                streamingText: accumulatedText || prev.streamingText,
-                diffs: diffs.length > 0 ? diffs : prev.diffs,
-                todos: sessionTodos.length > 0 ? sessionTodos : prev.todos,
-              }));
-
-              // Ingest pending permission if present
-              if (runtime?.pendingPermission) {
-                const perm = runtime.pendingPermission;
-                setPermissions((prev) => [...prev.filter((p) => p.id !== perm.id), perm]);
+              // Per-session model isolation & restore
+              const cachedModel = sessionModelsRef.current.get(session.id);
+              if (cachedModel) {
+                setSelectedModel(cachedModel);
+              } else {
+                const sessionModelFromMsg = [...mergedMessages]
+                  .reverse()
+                  .find((m) => m.providerID && m.modelID);
+                if (sessionModelFromMsg?.providerID && sessionModelFromMsg?.modelID) {
+                  const restored = {
+                    providerID: sessionModelFromMsg.providerID,
+                    modelID: sessionModelFromMsg.modelID,
+                  };
+                  sessionModelsRef.current.set(session.id, restored);
+                  setSelectedModel(restored);
+                } else if (defaultModelRef.current) {
+                  setSelectedModel(defaultModelRef.current);
+                }
               }
 
-              // Update sequence anchor
-              if (typeof runtime?.lastEventSequence === 'number') {
-                lastSequenceRef.current.set(session.id, runtime.lastEventSequence);
+              if (!isSnapshotStale) {
+                updateSessionRuntime(session.id, (prev) => ({
+                  ...prev,
+                  isStreaming,
+                  isWaitingForResponse: false,
+                  activeMessageId: activeMsgId || prev.activeMessageId,
+                  streamingText: accumulatedText || prev.streamingText,
+                  diffs: diffs,
+                  todos: sessionTodos,
+                }));
+              } else {
+                updateSessionRuntime(session.id, (prev) => ({
+                  ...prev,
+                  diffs,
+                  todos: sessionTodos,
+                }));
               }
               break;
             }
 
             case 'SESSION_QUEUE_SYNC': {
-              const { sessionId, queue } = msg.payload;
+              const { sessionId, queue, revision } = msg.payload;
               if (sessionId && Array.isArray(queue)) {
-                syncQueueRef.current(sessionId, queue);
+                syncQueueRef.current(sessionId, queue, revision);
+              }
+              break;
+            }
+
+            case 'SESSION_QUEUE_CONFLICT': {
+              const { sessionId, authoritativeQueue, currentRevision } = msg.payload;
+              if (sessionId && Array.isArray(authoritativeQueue)) {
+                console.warn(
+                  `[useRelay] Remote queue conflict on session ${sessionId}. Syncing authoritative queue (rev ${currentRevision}).`
+                );
+                syncQueueRef.current(sessionId, authoritativeQueue, currentRevision);
               }
               break;
             }
@@ -579,9 +695,9 @@ export function useRelay(relayWsUrl?: string) {
             }
 
             case 'MESSAGE_STARTED': {
-              const { sessionId, messageId, timestamp, sequence } = msg.payload;
+              const { sessionId, messageId, timestamp, sequence, agentInstanceId } = msg.payload as any;
               if (!sessionId) break;
-              handleEventSequence(sessionId, sequence);
+              handleEventSequence(sessionId, sequence, agentInstanceId);
               setSessionStatuses((prev) => ({ ...prev, [sessionId]: 'busy' }));
 
               updateSessionRuntime(sessionId, (prev) => ({
@@ -628,9 +744,9 @@ export function useRelay(relayWsUrl?: string) {
             }
 
             case 'MESSAGE_DELTA': {
-              const { delta, messageId, sessionId, sequence } = msg.payload;
+              const { delta, messageId, sessionId, sequence, agentInstanceId } = msg.payload as any;
               if (!sessionId) break;
-              handleEventSequence(sessionId, sequence);
+              handleEventSequence(sessionId, sequence, agentInstanceId);
 
               let buf = sessionDeltaBuffersRef.current.get(sessionId);
               if (!buf) {
@@ -678,9 +794,9 @@ export function useRelay(relayWsUrl?: string) {
             }
 
             case 'MESSAGE_COMPLETED': {
-              const { sessionId, messageId, totalText, sequence } = msg.payload;
+              const { sessionId, messageId, totalText, sequence, agentInstanceId } = msg.payload as any;
               if (!sessionId) break;
-              handleEventSequence(sessionId, sequence);
+              handleEventSequence(sessionId, sequence, agentInstanceId);
               setSessionStatuses((prev) => ({ ...prev, [sessionId]: 'idle' }));
 
               let flushedDelta = '';
@@ -752,7 +868,7 @@ export function useRelay(relayWsUrl?: string) {
               const sessionId = props.sessionID || props.sessionId || evt.payload?.sessionID || evt.payload?.sessionId || evt.sessionID || props.part?.sessionID;
 
               if (sessionId) {
-                handleEventSequence(sessionId, (msg.payload as any)?.sequence);
+                handleEventSequence(sessionId, (msg.payload as any)?.sequence, (msg.payload as any)?.agentInstanceId);
                 updateSessionRuntime(sessionId, (prev) => ({
                   ...prev,
                   isWaitingForResponse: false,
@@ -929,12 +1045,33 @@ export function useRelay(relayWsUrl?: string) {
                   fetchSessionDiffRef.current?.(selectedDeviceRef.current.deviceId, sessionId);
                 }
               }
+
+              if (eventType === 'session.deleted' && sessionId) {
+                setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+                setSessionStatuses((prev) => {
+                  const updated = { ...prev };
+                  delete updated[sessionId];
+                  return updated;
+                });
+                setSessionRuntime((prev) => {
+                  const updated = { ...prev };
+                  delete updated[sessionId];
+                  return updated;
+                });
+                lastSequenceRef.current.delete(sessionId);
+                agentEpochsRef.current.delete(sessionId);
+                if (activeSessionRef.current?.session?.id === sessionId) {
+                  setActiveSession(null);
+                  setActiveDiffFile(null);
+                }
+              }
               break;
             }
 
             case 'MESSAGE_ERROR': {
-              const { sessionId, error } = msg.payload;
+              const { sessionId, error, sequence, agentInstanceId } = msg.payload as any;
               if (sessionId) {
+                handleEventSequence(sessionId, sequence, agentInstanceId);
                 const buf = sessionDeltaBuffersRef.current.get(sessionId);
                 if (buf?.rafId !== null && buf?.rafId !== undefined) {
                   cancelAnimationFrame(buf.rafId);
@@ -973,9 +1110,19 @@ export function useRelay(relayWsUrl?: string) {
             }
 
             case 'PERMISSION_REQUEST': {
-              const perm = msg.payload as any;
-              playSound('permission');
-              setPermissions((prev) => [...prev.filter((p) => p.id !== perm.id), perm]);
+              const p = msg.payload as any;
+              const permId = p.id || p.requestId;
+              if (permId) {
+                const permItem: PermissionItem = {
+                  id: permId,
+                  title: p.title || p.description,
+                  command: p.command,
+                  sessionID: p.sessionId,
+                  time: p.time || Date.now(),
+                };
+                playSound('permission');
+                setPermissions((prev) => [...prev.filter((item) => item.id !== permId), permItem]);
+              }
               break;
             }
 
@@ -1156,6 +1303,10 @@ export function useRelay(relayWsUrl?: string) {
         setActiveSession({ session: res.session, messages: [] });
         setActiveDiffFile(null);
         setActiveTab('chat');
+        if (defaultModelRef.current) {
+          setSelectedModel(defaultModelRef.current);
+          sessionModelsRef.current.set(res.session.id, defaultModelRef.current);
+        }
       }
       return res.session;
     },
@@ -1191,6 +1342,17 @@ export function useRelay(relayWsUrl?: string) {
     fetchTodosRef.current = fetchTodos;
   }, [fetchTodos]);
 
+  const fetchQueue = useCallback((deviceId: string, sessionId: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const token = deviceTokensRef.current[deviceId];
+    const msg = createMessage('SESSION_QUEUE_GET', {
+      deviceId,
+      sessionId,
+      deviceToken: token,
+    });
+    wsRef.current.send(JSON.stringify(msg));
+  }, []);
+
   const openSession = useCallback(
     async (deviceId: string, sessionId: string) => {
       latestRequestedSessionIdRef.current = sessionId;
@@ -1209,6 +1371,7 @@ export function useRelay(relayWsUrl?: string) {
           fetchSessionDiff(deviceId, sessionId);
           fetchWorkspace(deviceId);
           fetchTodos(deviceId, sessionId);
+          fetchQueue(deviceId, sessionId);
         }
         return res;
       } finally {
@@ -1218,7 +1381,7 @@ export function useRelay(relayWsUrl?: string) {
         }
       }
     },
-    [deviceTokens, sendRpc, fetchSessionDiff, fetchWorkspace, fetchTodos]
+    [deviceTokens, sendRpc, fetchSessionDiff, fetchWorkspace, fetchTodos, fetchQueue]
   );
 
   useEffect(() => {
@@ -1278,18 +1441,28 @@ export function useRelay(relayWsUrl?: string) {
     return map;
   }, [sessionRuntime]);
 
-  const handleQueueUpdate = useCallback((sessionId: string, newQueue: QueuedMessage[]) => {
-    if (!selectedDeviceRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    const deviceId = selectedDeviceRef.current.deviceId;
-    const token = deviceTokensRef.current[deviceId];
-    const msg = createMessage('SESSION_QUEUE_UPDATE', {
-      deviceId,
-      sessionId,
-      queue: newQueue,
-      deviceToken: token,
-    });
-    wsRef.current.send(JSON.stringify(msg));
-  }, []);
+  const handleQueueUpdate = useCallback(
+    (
+      sessionId: string,
+      newQueue: QueuedMessage[],
+      mutationId?: string,
+      baseRevision?: number
+    ) => {
+      if (!selectedDeviceRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      const deviceId = selectedDeviceRef.current.deviceId;
+      const token = deviceTokensRef.current[deviceId];
+      const msg = createMessage('SESSION_QUEUE_UPDATE', {
+        deviceId,
+        sessionId,
+        queue: newQueue,
+        mutationId,
+        baseRevision,
+        deviceToken: token,
+      });
+      wsRef.current.send(JSON.stringify(msg));
+    },
+    []
+  );
 
   const {
     currentQueue: queuedMessages,
@@ -1497,8 +1670,11 @@ export function useRelay(relayWsUrl?: string) {
         })
       );
       setModels(res.models || []);
-      if (res.defaultModel && !selectedModel) {
-        setSelectedModel(res.defaultModel);
+      if (res.defaultModel) {
+        defaultModelRef.current = res.defaultModel;
+        if (!selectedModel) {
+          setSelectedModel(res.defaultModel);
+        }
       }
     } catch (err: any) {
       console.warn('Failed to fetch models:', err.message);
@@ -1831,7 +2007,7 @@ export function useRelay(relayWsUrl?: string) {
     abortActiveSession,
     models,
     selectedModel,
-    setSelectedModel,
+    setSelectedModel: handleSelectModel,
     fetchModels,
     permissions: activePermissions,
     fetchPermissions,
@@ -1865,6 +2041,14 @@ export function useRelay(relayWsUrl?: string) {
       setActiveDiffFile(null);
       setActiveTab('chat');
       setEditingQueueItem(null);
+      if (defaultModelRef.current) {
+        setSelectedModel(defaultModelRef.current);
+      }
+      if (selectedDeviceIdRef.current) {
+        try {
+          localStorage.removeItem(`opencode_last_session_${selectedDeviceIdRef.current}`);
+        } catch {}
+      }
     },
     refreshDevices: () => {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {

@@ -55,7 +55,7 @@ export function buildRelayServer(options: RelayOptions = {}): {
     devices: registry.getAllMergedDevices(store.getAllPersistedDevices()),
   }));
 
-  const sessionQueues = new Map<string, QueuedMessage[]>();
+  const processedMutationIds = new Map<string, { revision: number; timestamp: number }>();
 
   app.register(async function (fastify) {
     fastify.get('/ws', { websocket: true }, (socket: WebSocket) => {
@@ -132,6 +132,7 @@ export function buildRelayServer(options: RelayOptions = {}): {
                 const session = store.createPairingCode(deviceId, deviceName);
                 pairingCode = session.code;
                 pairingExpiresAt = session.expiresAt;
+                console.log(`[relay] >>> PAIRING CODE FOR ${deviceId}: ${pairingCode} <<<`);
               }
 
               const ack = createMessage('AGENT_HELLO_ACK', {
@@ -537,13 +538,6 @@ export function buildRelayServer(options: RelayOptions = {}): {
             }
 
             case 'SESSION_GET_RESULT': {
-              const { deviceId, session } = message.payload || {};
-              if (deviceId && session?.id) {
-                const q = sessionQueues.get(`${deviceId}:${session.id}`);
-                if (q) {
-                  message.payload.queue = q;
-                }
-              }
               const clientSocket = requestToClient.get(message.id);
               if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
                 clientSocket.send(JSON.stringify(message));
@@ -730,6 +724,12 @@ export function buildRelayServer(options: RelayOptions = {}): {
                   if (!registry.getPty((message.payload as any).ptyId)) {
                     registry.registerPty((message.payload as any).ptyId, deviceId);
                   }
+                } else if (message.type === 'OPENCODE_EVENT') {
+                  const ev = (message.payload as any)?.payload || (message.payload as any)?.event;
+                  const deletedSessionId = ev?.properties?.sessionID || ev?.sessionID;
+                  if (ev?.type === 'session.deleted' && deletedSessionId) {
+                    store.deleteSessionQueue(deviceId, deletedSessionId);
+                  }
                 }
 
                 registry.broadcastToAuthorizedClients(
@@ -741,9 +741,9 @@ export function buildRelayServer(options: RelayOptions = {}): {
               break;
             }
 
-            // PTY Management & I/O
-            case 'SESSION_QUEUE_UPDATE': {
-              const { deviceId, sessionId, queue, deviceToken } = message.payload;
+            // Remote Queue Authoritative Synchronization
+            case 'SESSION_QUEUE_GET': {
+              const { deviceId, sessionId, deviceToken } = message.payload;
               if (!store.verifyDeviceToken(deviceId, deviceToken)) {
                 socket.send(
                   JSON.stringify(
@@ -758,13 +758,120 @@ export function buildRelayServer(options: RelayOptions = {}): {
               }
 
               ensureClientAuthorized(deviceId, deviceToken);
-              sessionQueues.set(`${deviceId}:${sessionId}`, queue);
 
-              // Broadcast synchronized queue state to all authorized clients of this device
+              const stored = store.getSessionQueue(deviceId, sessionId);
+              const syncMsg = createMessage('SESSION_QUEUE_SYNC', {
+                deviceId,
+                sessionId,
+                queue: stored ? stored.messages : [],
+                revision: stored ? stored.revision : 0,
+              });
+              socket.send(JSON.stringify(syncMsg));
+              break;
+            }
+
+            case 'SESSION_QUEUE_UPDATE': {
+              const { deviceId, sessionId, clientId, mutationId, baseRevision, queue, deviceToken } = message.payload;
+              if (!store.verifyDeviceToken(deviceId, deviceToken)) {
+                socket.send(
+                  JSON.stringify(
+                    createMessage('ERROR', {
+                      code: 'DEVICE_NOT_AUTHORIZED',
+                      message: 'Access denied: invalid or revoked device token',
+                      requestId: message.id,
+                    })
+                  )
+                );
+                return;
+              }
+
+              ensureClientAuthorized(deviceId, deviceToken);
+
+              // 1. Idempotency check: if mutationId has already been successfully processed, return cached result
+              if (mutationId && processedMutationIds.has(mutationId)) {
+                const cached = processedMutationIds.get(mutationId)!;
+                socket.send(
+                  JSON.stringify(
+                    createMessage('SESSION_QUEUE_UPDATE_RESULT', {
+                      accepted: true,
+                      deviceId,
+                      sessionId,
+                      revision: cached.revision,
+                      mutationId,
+                    })
+                  )
+                );
+                return;
+              }
+
+              // 2. Conflict check against current authoritative revision
+              const current = store.getSessionQueue(deviceId, sessionId) || {
+                deviceId,
+                sessionId,
+                revision: 0,
+                messages: [],
+                updatedAt: Date.now(),
+              };
+
+              const expectedBaseRevision = current.revision;
+              if (baseRevision !== undefined && baseRevision !== expectedBaseRevision) {
+                // Conflict detected!
+                socket.send(
+                  JSON.stringify(
+                    createMessage('SESSION_QUEUE_CONFLICT', {
+                      deviceId,
+                      sessionId,
+                      currentRevision: current.revision,
+                      authoritativeQueue: current.messages,
+                      rejectedMutationId: mutationId,
+                    })
+                  )
+                );
+                return;
+              }
+
+              // 3. Mutation accepted
+              const nextRevision = current.revision + 1;
+              const updatedRecord = {
+                deviceId,
+                sessionId,
+                revision: nextRevision,
+                messages: queue,
+                updatedAt: Date.now(),
+              };
+
+              store.saveSessionQueue(updatedRecord);
+
+              if (mutationId) {
+                processedMutationIds.set(mutationId, { revision: nextRevision, timestamp: Date.now() });
+                if (processedMutationIds.size > 2000) {
+                  const expiry = Date.now() - 3600000;
+                  for (const [id, val] of processedMutationIds) {
+                    if (val.timestamp < expiry) processedMutationIds.delete(id);
+                  }
+                }
+              }
+
+              // 4. Send ACK to requesting client
+              socket.send(
+                JSON.stringify(
+                  createMessage('SESSION_QUEUE_UPDATE_RESULT', {
+                    accepted: true,
+                    deviceId,
+                    sessionId,
+                    revision: nextRevision,
+                    mutationId,
+                  })
+                )
+              );
+
+              // 5. Broadcast authoritative synchronized queue state to all authorized clients
               const syncMsg = createMessage('SESSION_QUEUE_SYNC', {
                 deviceId,
                 sessionId,
                 queue,
+                revision: nextRevision,
+                mutationId,
               });
               registry.broadcastToAuthorizedClients(
                 deviceId,

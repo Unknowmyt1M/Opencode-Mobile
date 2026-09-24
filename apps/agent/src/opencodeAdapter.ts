@@ -167,7 +167,8 @@ export class OpenCodeAdapter {
         }
 
         const parts = m.parts || [];
-        const textContent = parts
+        const nonSyntheticParts = parts.filter((p: any) => !p.synthetic);
+        const textContent = nonSyntheticParts
           .filter((p: any) => p.type === 'text' && typeof p.text === 'string')
           .map((p: any) => p.text)
           .join('\n');
@@ -197,7 +198,7 @@ export class OpenCodeAdapter {
           id: info.id || `msg_${Date.now()}`,
           sessionId: info.sessionID || sessionId,
           role: info.role === 'user' ? 'user' : info.role === 'system' ? 'system' : 'assistant',
-          content: textContent || (parts[0]?.text ?? ''),
+          content: textContent || (nonSyntheticParts.find((p: any) => p.type === 'text')?.text ?? (parts[0]?.text ?? '')),
           createdAt: info.createdAt || Date.now(),
           isCompaction: Boolean(isCompaction),
           summary: info.summary === true ? true : undefined,
@@ -209,6 +210,7 @@ export class OpenCodeAdapter {
             id: p.id,
             type: p.type,
             text: p.text,
+            synthetic: Boolean(p.synthetic),
             duration: p.duration,
             callID: p.callID,
             tool: p.tool,

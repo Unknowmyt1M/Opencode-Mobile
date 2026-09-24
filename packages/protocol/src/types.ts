@@ -57,6 +57,7 @@ export interface MessagePart {
   hash?: string;
   files?: string[];
   reason?: string;
+  synthetic?: boolean;
   [key: string]: unknown;
 }
 
@@ -292,16 +293,26 @@ export interface QueuedMessage {
   error?: string;
 }
 
+export interface QuestionItem {
+  id: string;
+  sessionID?: string;
+  questions?: unknown[];
+  time?: number;
+}
+
 export interface SessionRuntimeSnapshot {
   status: 'idle' | 'busy' | 'error';
   isStreaming: boolean;
+  agentInstanceId: string;
+  snapshotSequence: number;
+  activeTurnId?: string;
   activeMessageId?: string;
   streamingText?: string;
   parts?: MessagePart[];
-  todos?: TodoItem[];
-  diffs?: SnapshotFileDiff[];
-  pendingPermission?: PermissionItem;
-  pendingQuestion?: { requestId: string; sessionId: string; questions?: unknown[] };
+  todos: TodoItem[];
+  diffs: SnapshotFileDiff[];
+  pendingPermissions: PermissionItem[];
+  pendingQuestions: QuestionItem[];
   lastEventSequence?: number;
 }
 
@@ -321,20 +332,54 @@ export interface SessionGetResultPayload {
   diffs?: SnapshotFileDiff[];
   todos?: TodoItem[];
   runtime?: SessionRuntimeSnapshot;
-  queue?: QueuedMessage[];
+}
+
+export interface QueueState {
+  deviceId: string;
+  sessionId: string;
+  revision: number;
+  messages: QueuedMessage[];
+  updatedAt: number;
+}
+
+export interface SessionQueueGetPayload {
+  deviceId: string;
+  sessionId: string;
+  deviceToken?: string;
 }
 
 export interface SessionQueueUpdatePayload {
   deviceId: string;
   sessionId: string;
+  clientId?: string;
+  mutationId?: string;
+  baseRevision?: number;
   queue: QueuedMessage[];
   deviceToken?: string;
+}
+
+export interface SessionQueueUpdateResultPayload {
+  accepted: boolean;
+  deviceId: string;
+  sessionId: string;
+  revision: number;
+  mutationId?: string;
+}
+
+export interface SessionQueueConflictPayload {
+  deviceId: string;
+  sessionId: string;
+  currentRevision: number;
+  authoritativeQueue: QueuedMessage[];
+  rejectedMutationId?: string;
 }
 
 export interface SessionQueueSyncPayload {
   deviceId: string;
   sessionId: string;
   queue: QueuedMessage[];
+  revision?: number;
+  mutationId?: string;
 }
 
 export interface SessionSubscribePayload {
@@ -376,6 +421,9 @@ export interface MessageStartedPayload {
   messageId: string;
   timestamp: number;
   sequence?: number;
+  agentInstanceId?: string;
+  scope?: 'session' | 'device' | 'global';
+  eventId?: string;
 }
 
 export interface MessageDeltaPayload {
@@ -384,6 +432,9 @@ export interface MessageDeltaPayload {
   messageId: string;
   delta: string;
   sequence: number;
+  agentInstanceId?: string;
+  scope?: 'session' | 'device' | 'global';
+  eventId?: string;
 }
 
 export interface MessageCompletedPayload {
@@ -393,6 +444,9 @@ export interface MessageCompletedPayload {
   totalText?: string;
   timestamp: number;
   sequence?: number;
+  agentInstanceId?: string;
+  scope?: 'session' | 'device' | 'global';
+  eventId?: string;
 }
 
 export interface MessageErrorPayload {
@@ -401,6 +455,9 @@ export interface MessageErrorPayload {
   messageId?: string;
   error: string;
   sequence?: number;
+  agentInstanceId?: string;
+  scope?: 'session' | 'device' | 'global';
+  eventId?: string;
 }
 
 export interface OpenCodeEventPayload {
@@ -408,6 +465,9 @@ export interface OpenCodeEventPayload {
   eventType: string;
   payload: unknown;
   sequence: number;
+  agentInstanceId?: string;
+  scope?: 'session' | 'device' | 'global';
+  eventId?: string;
 }
 
 export interface PermissionRequestPayload {

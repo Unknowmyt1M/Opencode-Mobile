@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { DeviceCapabilities } from '@opencode-remote/protocol';
+import type { DeviceCapabilities, QueuedMessage } from '@opencode-remote/protocol';
 
 export interface PersistedDeviceRecord {
   deviceId: string;
@@ -21,9 +21,18 @@ export interface PersistedDeviceRecord {
 // Backward compatibility type alias
 export type PairedDeviceRecord = PersistedDeviceRecord;
 
+export interface PersistedSessionQueueRecord {
+  deviceId: string;
+  sessionId: string;
+  revision: number;
+  messages: QueuedMessage[];
+  updatedAt: number;
+}
+
 export interface RelayStoreDataV2 {
   version: 2;
   devices: PersistedDeviceRecord[];
+  sessionQueues?: PersistedSessionQueueRecord[];
 }
 
 export interface PairingSession {
@@ -41,6 +50,7 @@ export interface PairingSession {
 export class RelayStore {
   private filePath: string;
   private devices = new Map<string, PersistedDeviceRecord>(); // deviceId -> record
+  private sessionQueues = new Map<string, PersistedSessionQueueRecord>(); // `${deviceId}:${sessionId}` -> record
   private activePairings = new Map<string, PairingSession>(); // pairingId -> session
   private codeToPairingId = new Map<string, string>(); // code -> pairingId
 
@@ -93,6 +103,19 @@ export class RelayStore {
               createdAt: dev.createdAt || Date.now(),
               lastSeen: dev.lastSeen || Date.now(),
             });
+          }
+        }
+        if (Array.isArray(data.sessionQueues)) {
+          for (const sq of data.sessionQueues) {
+            if (sq && sq.deviceId && sq.sessionId && Array.isArray(sq.messages)) {
+              this.sessionQueues.set(`${sq.deviceId}:${sq.sessionId}`, {
+                deviceId: sq.deviceId,
+                sessionId: sq.sessionId,
+                revision: typeof sq.revision === 'number' ? sq.revision : 0,
+                messages: sq.messages,
+                updatedAt: sq.updatedAt || Date.now(),
+              });
+            }
           }
         }
       } else if (data && (Array.isArray(data.pairedDevices) || Array.isArray(data.devices))) {
@@ -155,6 +178,7 @@ export class RelayStore {
           os: d.os,
           capabilities: d.capabilities,
         })),
+        sessionQueues: Array.from(this.sessionQueues.values()),
       };
 
       // Atomic write via temporary file + atomic rename
@@ -468,7 +492,39 @@ export class RelayStore {
     return false;
   }
 
+  getSessionQueue(deviceId: string, sessionId: string): PersistedSessionQueueRecord | undefined {
+    return this.sessionQueues.get(`${deviceId}:${sessionId}`);
+  }
+
+  saveSessionQueue(record: PersistedSessionQueueRecord): void {
+    this.sessionQueues.set(`${record.deviceId}:${record.sessionId}`, record);
+    this.persist();
+  }
+
+  deleteSessionQueue(deviceId: string, sessionId: string): boolean {
+    const deleted = this.sessionQueues.delete(`${deviceId}:${sessionId}`);
+    if (deleted) {
+      this.persist();
+    }
+    return deleted;
+  }
+
+  deleteDeviceSessionQueues(deviceId: string): void {
+    let changed = false;
+    const prefix = `${deviceId}:`;
+    for (const key of Array.from(this.sessionQueues.keys())) {
+      if (key.startsWith(prefix)) {
+        this.sessionQueues.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.persist();
+    }
+  }
+
   deleteDevice(deviceId: string): boolean {
+    this.deleteDeviceSessionQueues(deviceId);
     const deleted = this.devices.delete(deviceId);
     if (deleted) {
       this.persist();
@@ -478,6 +534,7 @@ export class RelayStore {
 
   clear() {
     this.devices.clear();
+    this.sessionQueues.clear();
     this.activePairings.clear();
     this.codeToPairingId.clear();
     this.clientRateLimits.clear();

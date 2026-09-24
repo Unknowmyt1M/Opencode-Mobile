@@ -141,8 +141,13 @@ const TurnItem: React.FC<TurnItemProps> = React.memo(
       );
     }
 
-    const cleanUserPrompt = turn.userMessage
-      ? turn.userMessage.content
+    const userTextFromParts = turn.userMessage?.parts?.find(
+      (p: any) => p.type === 'text' && !p.synthetic
+    )?.text;
+    const rawUserContent = userTextFromParts || turn.userMessage?.content || '';
+    const cleanUserPrompt = rawUserContent
+      ? rawUserContent
+          .replace(/\[SUPERMEMORY\][\s\S]*?(?=\n\n|$)/gi, '')
           .replace(/<supermemory-recall>[\s\S]*?<\/supermemory-recall>/gi, '')
           .trim()
       : null;

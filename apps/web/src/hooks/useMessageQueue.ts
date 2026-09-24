@@ -45,7 +45,12 @@ interface UseMessageQueueOptions {
     content: string,
     model?: { providerID: string; modelID: string }
   ) => Promise<void> | void;
-  onQueueUpdate?: (sessionId: string, queue: QueuedMessage[]) => void;
+  onQueueUpdate?: (
+    sessionId: string,
+    queue: QueuedMessage[],
+    mutationId?: string,
+    baseRevision?: number
+  ) => void;
 }
 
 export function useMessageQueue({
@@ -62,6 +67,8 @@ export function useMessageQueue({
   const onQueueUpdateRef = useRef(onQueueUpdate);
   onQueueUpdateRef.current = onQueueUpdate;
 
+  const revisionsRef = useRef<Record<string, number>>({});
+
   // Per-session dispatch mutexes to prevent concurrent duplicates per session
   const dispatchingSessionsRef = useRef<Set<string>>(new Set());
   const prevStreamingBySessionRef = useRef<Record<string, boolean>>({});
@@ -75,7 +82,10 @@ export function useMessageQueue({
   const currentQueue = activeSessionId ? queues[activeSessionId] || [] : [];
 
   // Sync external queue from backend / peer clients without triggering local broadcast loop
-  const syncQueue = useCallback((sessionId: string, newQueue: QueuedMessage[]) => {
+  const syncQueue = useCallback((sessionId: string, newQueue: QueuedMessage[], revision?: number) => {
+    if (typeof revision === 'number') {
+      revisionsRef.current[sessionId] = revision;
+    }
     setQueues((prev) => {
       const curr = prev[sessionId] || [];
       if (
@@ -96,6 +106,27 @@ export function useMessageQueue({
     });
   }, []);
 
+  // Dispatch local mutation: strictly pure state updater + network dispatch OUTSIDE updater
+  const dispatchMutation = useCallback(
+    (sessionId: string, nextQueue: QueuedMessage[]) => {
+      const baseRevision = revisionsRef.current[sessionId] || 0;
+      const mutationId = `mut_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+      setQueues((prev) => {
+        const updated = { ...prev };
+        if (nextQueue.length === 0) {
+          delete updated[sessionId];
+        } else {
+          updated[sessionId] = nextQueue;
+        }
+        return updated;
+      });
+
+      onQueueUpdateRef.current?.(sessionId, nextQueue, mutationId, baseRevision);
+    },
+    []
+  );
+
   // Enqueue a message
   const enqueue = useCallback(
     (
@@ -114,53 +145,38 @@ export function useMessageQueue({
         retryCount: 0,
       };
 
-      setQueues((prev) => {
-        const existing = prev[sessionId] || [];
-        const updated = [...existing, item];
-        onQueueUpdateRef.current?.(sessionId, updated);
-        return {
-          ...prev,
-          [sessionId]: updated,
-        };
-      });
+      const existing = queues[sessionId] || [];
+      const updated = [...existing, item];
+      dispatchMutation(sessionId, updated);
 
       return item;
     },
-    []
+    [queues, dispatchMutation]
   );
 
   // Edit a queued message content
-  const edit = useCallback((sessionId: string, id: string, newContent: string) => {
-    const clean = newContent.trim();
-    if (!clean) return;
-    setQueues((prev) => {
-      const existing = prev[sessionId] || [];
+  const edit = useCallback(
+    (sessionId: string, id: string, newContent: string) => {
+      const clean = newContent.trim();
+      if (!clean) return;
+      const existing = queues[sessionId] || [];
       const updated = existing.map((m) => (m.id === id ? { ...m, content: clean } : m));
-      onQueueUpdateRef.current?.(sessionId, updated);
-      return {
-        ...prev,
-        [sessionId]: updated,
-      };
-    });
-    setEditingItem((curr) => (curr?.id === id ? null : curr));
-  }, []);
+      dispatchMutation(sessionId, updated);
+      setEditingItem((curr) => (curr?.id === id ? null : curr));
+    },
+    [queues, dispatchMutation]
+  );
 
   // Remove a message from queue
-  const remove = useCallback((sessionId: string, id: string) => {
-    setQueues((prev) => {
-      const existing = prev[sessionId] || [];
+  const remove = useCallback(
+    (sessionId: string, id: string) => {
+      const existing = queues[sessionId] || [];
       const filtered = existing.filter((m) => m.id !== id);
-      onQueueUpdateRef.current?.(sessionId, filtered);
-      const updated = { ...prev };
-      if (filtered.length === 0) {
-        delete updated[sessionId];
-      } else {
-        updated[sessionId] = filtered;
-      }
-      return updated;
-    });
-    setEditingItem((curr) => (curr?.id === id ? null : curr));
-  }, []);
+      dispatchMutation(sessionId, filtered);
+      setEditingItem((curr) => (curr?.id === id ? null : curr));
+    },
+    [queues, dispatchMutation]
+  );
 
   // Send Now action:
   // If agent is currently idle, dispatches immediately.
@@ -177,16 +193,10 @@ export function useMessageQueue({
       if (isStreaming) {
         // Agent is busy: move to front of queue (index 0)
         if (itemIndex > 0) {
-          setQueues((prev) => {
-            const list = [...(prev[sessionId] || [])];
-            const [target] = list.splice(itemIndex, 1);
-            const reordered = [target, ...list];
-            onQueueUpdateRef.current?.(sessionId, reordered);
-            return {
-              ...prev,
-              [sessionId]: reordered,
-            };
-          });
+          const list = [...(queues[sessionId] || [])];
+          const [target] = list.splice(itemIndex, 1);
+          const reordered = [target, ...list];
+          dispatchMutation(sessionId, reordered);
         }
         return;
       }
@@ -196,68 +206,48 @@ export function useMessageQueue({
       dispatchingSessionsRef.current.add(sessionId);
 
       try {
-        setQueues((prev) => {
-          const updated = (prev[sessionId] || []).map((m) =>
-            m.id === id ? { ...m, status: 'sending' as const } : m
-          );
-          onQueueUpdateRef.current?.(sessionId, updated);
-          return {
-            ...prev,
-            [sessionId]: updated,
-          };
-        });
+        const sendingList = (queues[sessionId] || []).map((m) =>
+          m.id === id ? { ...m, status: 'sending' as const } : m
+        );
+        dispatchMutation(sessionId, sendingList);
 
         await onSendMessage(selectedDeviceId, sessionId, item.content, item.model);
         remove(sessionId, id);
       } catch (err: any) {
-        setQueues((prev) => {
-          const updated = (prev[sessionId] || []).map((m) =>
-            m.id === id ? { ...m, status: 'failed' as const, error: err.message || 'Send failed' } : m
-          );
-          onQueueUpdateRef.current?.(sessionId, updated);
-          return {
-            ...prev,
-            [sessionId]: updated,
-          };
-        });
+        const failedList = (queues[sessionId] || []).map((m) =>
+          m.id === id ? { ...m, status: 'failed' as const, error: err.message || 'Send failed' } : m
+        );
+        dispatchMutation(sessionId, failedList);
       } finally {
         dispatchingSessionsRef.current.delete(sessionId);
       }
     },
-    [selectedDeviceId, isStreaming, queues, onSendMessage, remove]
+    [selectedDeviceId, isStreaming, queues, dispatchMutation, onSendMessage, remove]
   );
 
   // Retry a failed message
   const retry = useCallback(
     async (sessionId: string, id: string) => {
-      setQueues((prev) => {
-        const updated = (prev[sessionId] || []).map((m) =>
-          m.id === id ? { ...m, status: 'queued' as const, error: undefined, retryCount: (m.retryCount || 0) + 1 } : m
-        );
-        onQueueUpdateRef.current?.(sessionId, updated);
-        return {
-          ...prev,
-          [sessionId]: updated,
-        };
-      });
+      const updated = (queues[sessionId] || []).map((m) =>
+        m.id === id ? { ...m, status: 'queued' as const, error: undefined, retryCount: (m.retryCount || 0) + 1 } : m
+      );
+      dispatchMutation(sessionId, updated);
 
       if (!isStreaming) {
         await sendNow(sessionId, id);
       }
     },
-    [isStreaming, sendNow]
+    [isStreaming, queues, dispatchMutation, sendNow]
   );
 
   // Clear all queued messages for a session
-  const clear = useCallback((sessionId: string) => {
-    setQueues((prev) => {
-      const updated = { ...prev };
-      delete updated[sessionId];
-      onQueueUpdateRef.current?.(sessionId, []);
-      return updated;
-    });
-    setEditingItem(null);
-  }, []);
+  const clear = useCallback(
+    (sessionId: string) => {
+      dispatchMutation(sessionId, []);
+      setEditingItem(null);
+    },
+    [dispatchMutation]
+  );
 
   // Automatic dispatch when turn completes for ANY session (foreground or background):
   // Watch for isStreaming transitioning from true -> false per session

@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import crypto from 'node:crypto';
 import {
   parseProtocolMessage,
   createMessage,
@@ -9,6 +10,7 @@ import {
   type TodoItem,
   type SnapshotFileDiff,
   type PermissionItem,
+  type QuestionItem,
   type MessagePart,
   type SessionRuntimeSnapshot,
 } from '@opencode-remote/protocol';
@@ -26,7 +28,9 @@ export class RemoteAgent {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
-  private sequence = 1;
+  private readonly agentInstanceId: string = `agent_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  private sessionSequences: Map<string, number> = new Map();
+  private globalSequence = 1;
   private paired = false;
   private ptySockets: Map<string, WebSocket> = new Map();
 
@@ -106,20 +110,52 @@ export class RemoteAgent {
     return ptyWs;
   }
 
-  private sessionTurns: Map<string, { messageId: string; startedEmitted: boolean; completedEmitted: boolean }> = new Map();
-  private sessionRuntimes: Map<string, {
-    sessionId: string;
-    status: 'idle' | 'busy' | 'error';
-    turnId?: string;
-    userMessageId?: string;
-    assistantMessageId?: string;
-    streamingText: string;
-    parts: MessagePart[];
-    todos: TodoItem[];
-    diffs: SnapshotFileDiff[];
-    pendingPermission?: PermissionItem;
-    lastEventSequence: number;
-  }> = new Map();
+  private pendingPermissions: Map<string, PermissionItem> = new Map();
+  private pendingQuestions: Map<string, QuestionItem> = new Map();
+
+  private nextSessionSequence(sessionId: string): number {
+    const current = this.sessionSequences.get(sessionId) ?? 0;
+    const next = current + 1;
+    this.sessionSequences.set(sessionId, next);
+    return next;
+  }
+
+  private cleanupSessionRuntime(sessionId: string) {
+    this.sessionRuntimes.delete(sessionId);
+    this.sessionTurns.delete(sessionId);
+    this.sessionSequences.delete(sessionId);
+    for (const [id, perm] of Array.from(this.pendingPermissions.entries())) {
+      if (perm.sessionID === sessionId) {
+        this.pendingPermissions.delete(id);
+      }
+    }
+    for (const [id, q] of Array.from(this.pendingQuestions.entries())) {
+      if (q.sessionID === sessionId) {
+        this.pendingQuestions.delete(id);
+      }
+    }
+  }
+
+  private sessionTurns: Map<
+    string,
+    { turnId: string; messageId: string; startedEmitted: boolean; completedEmitted: boolean }
+  > = new Map();
+
+  private sessionRuntimes: Map<
+    string,
+    {
+      sessionId: string;
+      status: 'idle' | 'busy' | 'error';
+      turnId?: string;
+      userMessageId?: string;
+      assistantMessageId?: string;
+      streamingText: string;
+      parts: MessagePart[];
+      todos: TodoItem[];
+      diffs: SnapshotFileDiff[];
+      lastEventSequence: number;
+    }
+  > = new Map();
 
   private getOrCreateRuntime(sessionId: string) {
     let rt = this.sessionRuntimes.get(sessionId);
@@ -140,9 +176,14 @@ export class RemoteAgent {
 
   private getOrCreateTurn(sessionId: string, preferredMessageId?: string) {
     let turn = this.sessionTurns.get(sessionId);
-    if (!turn || turn.completedEmitted || (preferredMessageId && turn.startedEmitted && turn.messageId !== preferredMessageId)) {
+    if (
+      !turn ||
+      turn.completedEmitted ||
+      (preferredMessageId && turn.startedEmitted && turn.messageId !== preferredMessageId)
+    ) {
       const messageId = preferredMessageId || `msg_${sessionId}_${Date.now()}`;
-      turn = { messageId, startedEmitted: false, completedEmitted: false };
+      const turnId = `turn_${sessionId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      turn = { turnId, messageId, startedEmitted: false, completedEmitted: false };
       this.sessionTurns.set(sessionId, turn);
     } else if (preferredMessageId && !turn.startedEmitted && turn.messageId !== preferredMessageId) {
       turn.messageId = preferredMessageId;
@@ -159,25 +200,28 @@ export class RemoteAgent {
 
     if (!sessionId) {
       // Global/non-session event: broadcast raw event only
+      const seq = this.globalSequence++;
       const opencodeEvt = createMessage('OPENCODE_EVENT', {
         deviceId: this.config.deviceId,
         eventType,
         payload: evt,
-        sequence: this.sequence++,
+        sequence: seq,
+        agentInstanceId: this.agentInstanceId,
+        scope: 'global',
+        eventId: props.id || evt.id,
       });
       this.sendMessage(opencodeEvt);
       return;
     }
 
     const rt = this.getOrCreateRuntime(sessionId);
-    rt.lastEventSequence = this.sequence;
-
     const incomingMessageId = props.assistantMessageID || props.messageID;
     if (incomingMessageId) {
       rt.assistantMessageId = incomingMessageId;
     }
 
     const turn = this.getOrCreateTurn(sessionId, incomingMessageId);
+    rt.turnId = turn.turnId;
     const currentMessageId = turn.messageId;
 
     // Helper to emit MESSAGE_STARTED exactly once per turn
@@ -187,12 +231,17 @@ export class RemoteAgent {
         rt.status = 'busy';
         rt.streamingText = '';
         rt.parts = [];
+        const seq = this.nextSessionSequence(sessionId);
+        rt.lastEventSequence = seq;
         const msg = createMessage('MESSAGE_STARTED', {
           deviceId: this.config.deviceId,
           sessionId,
           messageId: currentMessageId,
           timestamp: Date.now(),
-          sequence: this.sequence++,
+          sequence: seq,
+          agentInstanceId: this.agentInstanceId,
+          scope: 'session',
+          eventId: props.id || evt.id,
         });
         this.sendMessage(msg);
       }
@@ -203,12 +252,17 @@ export class RemoteAgent {
       ensureStarted();
       rt.status = 'busy';
       rt.streamingText += props.delta;
+      const seq = this.nextSessionSequence(sessionId);
+      rt.lastEventSequence = seq;
       const msg = createMessage('MESSAGE_DELTA', {
         deviceId: this.config.deviceId,
         sessionId,
         messageId: currentMessageId,
         delta: props.delta,
-        sequence: this.sequence++,
+        sequence: seq,
+        agentInstanceId: this.agentInstanceId,
+        scope: 'session',
+        eventId: props.id || evt.id,
       });
       this.sendMessage(msg);
     } else if (
@@ -229,13 +283,18 @@ export class RemoteAgent {
       // Complete turn ONLY when entire session is truly idle
       if (turn.startedEmitted && !turn.completedEmitted) {
         turn.completedEmitted = true;
+        const seq = this.nextSessionSequence(sessionId);
+        rt.lastEventSequence = seq;
         const msg = createMessage('MESSAGE_COMPLETED', {
           deviceId: this.config.deviceId,
           sessionId,
           messageId: currentMessageId,
           totalText: props.text || rt.streamingText,
           timestamp: Date.now(),
-          sequence: this.sequence++,
+          sequence: seq,
+          agentInstanceId: this.agentInstanceId,
+          scope: 'session',
+          eventId: props.id || evt.id,
         });
         this.sendMessage(msg);
 
@@ -280,14 +339,32 @@ export class RemoteAgent {
         sessionID: sessionId,
         time: props.time || Date.now(),
       };
-      rt.pendingPermission = permItem;
+      this.pendingPermissions.set(permItem.id, permItem);
       const permMsg = createMessage('PERMISSION_REQUEST', {
         ...permItem,
         deviceId: this.config.deviceId,
       } as any);
       this.sendMessage(permMsg);
     } else if (eventType === 'permission.replied' || eventType === 'permission.v2.replied') {
-      rt.pendingPermission = undefined;
+      const permId = props.id || props.requestID || props.requestId;
+      if (permId) {
+        this.pendingPermissions.delete(permId);
+      }
+    } else if (eventType === 'question.asked') {
+      const qItem: QuestionItem = {
+        id: props.id || props.requestID || props.requestId || `q_${Date.now()}`,
+        sessionID: sessionId,
+        questions: props.questions || props.question,
+        time: props.time || Date.now(),
+      };
+      this.pendingQuestions.set(qItem.id, qItem);
+    } else if (eventType === 'question.replied' || eventType === 'question.rejected') {
+      const qId = props.id || props.requestID || props.requestId;
+      if (qId) {
+        this.pendingQuestions.delete(qId);
+      }
+    } else if (eventType === 'session.deleted') {
+      this.cleanupSessionRuntime(sessionId);
     } else if (
       (eventType === 'message.part.updated' || eventType === 'message.part') &&
       props.part
@@ -307,21 +384,32 @@ export class RemoteAgent {
         props.error?.data?.message ||
         props.error?.message ||
         (typeof props.error === 'string' ? props.error : 'OpenCode session error');
+      const seq = this.nextSessionSequence(sessionId);
+      rt.lastEventSequence = seq;
       const msg = createMessage('MESSAGE_ERROR', {
         deviceId: this.config.deviceId,
         sessionId,
         error: errorText,
+        sequence: seq,
+        agentInstanceId: this.agentInstanceId,
+        scope: 'session',
+        eventId: props.id || evt.id,
       });
       this.sendMessage(msg);
       this.sessionTurns.delete(sessionId);
     }
 
     // Always broadcast raw event for observability
+    const seq = this.nextSessionSequence(sessionId);
+    rt.lastEventSequence = seq;
     const opencodeEvt = createMessage('OPENCODE_EVENT', {
       deviceId: this.config.deviceId,
       eventType,
       payload: evt,
-      sequence: this.sequence++,
+      sequence: seq,
+      agentInstanceId: this.agentInstanceId,
+      scope: 'session',
+      eventId: props.id || evt.id,
     });
     this.sendMessage(opencodeEvt);
   }
@@ -573,17 +661,27 @@ export class RemoteAgent {
 
             try {
               const diffs = await this.adapter.getSessionDiff(msg.payload.sessionId);
-              if (diffs && diffs.length > 0) {
-                rt.diffs = diffs;
-              }
-            } catch {}
+              rt.diffs = diffs ?? [];
+            } catch {
+              rt.diffs = [];
+            }
 
             try {
               const todos = await this.adapter.getTodos(msg.payload.sessionId);
-              if (todos && todos.length > 0) {
-                rt.todos = todos;
-              }
-            } catch {}
+              rt.todos = todos ?? [];
+            } catch {
+              rt.todos = [];
+            }
+
+            const sessionPerms = Array.from(this.pendingPermissions.values()).filter(
+              (p) => !p.sessionID || p.sessionID === msg.payload.sessionId
+            );
+            const sessionQuestions = Array.from(this.pendingQuestions.values()).filter(
+              (q) => !q.sessionID || q.sessionID === msg.payload.sessionId
+            );
+
+            const snapshotSeq = this.nextSessionSequence(msg.payload.sessionId);
+            rt.lastEventSequence = snapshotSeq;
 
             const res = createMessage(
               'SESSION_GET_RESULT',
@@ -599,13 +697,17 @@ export class RemoteAgent {
                 runtime: {
                   status: isStreaming ? 'busy' : 'idle',
                   isStreaming,
+                  agentInstanceId: this.agentInstanceId,
+                  snapshotSequence: snapshotSeq,
+                  activeTurnId: currentTurn?.turnId,
                   activeMessageId: rt.assistantMessageId || currentTurn?.messageId,
                   streamingText: isStreaming ? rt.streamingText : undefined,
                   parts: rt.parts,
                   todos: rt.todos,
                   diffs: rt.diffs,
-                  pendingPermission: rt.pendingPermission,
-                  lastEventSequence: this.sequence,
+                  pendingPermissions: sessionPerms,
+                  pendingQuestions: sessionQuestions,
+                  lastEventSequence: snapshotSeq,
                 },
               },
               msg.id
@@ -682,16 +784,22 @@ export class RemoteAgent {
             turn.startedEmitted = true;
             const rt = this.getOrCreateRuntime(sessionId);
             rt.status = 'busy';
+            rt.turnId = turn.turnId;
             rt.userMessageId = messageId;
             rt.streamingText = '';
             rt.parts = [];
 
+            const seq = this.nextSessionSequence(sessionId);
+            rt.lastEventSequence = seq;
             this.sendMessage(
               createMessage('MESSAGE_STARTED', {
                 deviceId: this.config.deviceId,
                 sessionId,
                 messageId,
                 timestamp: Date.now(),
+                sequence: seq,
+                agentInstanceId: this.agentInstanceId,
+                scope: 'session',
               })
             );
 
@@ -902,6 +1010,9 @@ export class RemoteAgent {
         case 'PERMISSION_REPLY': {
           try {
             const success = await this.adapter.replyPermission(msg.payload.requestId, msg.payload.reply);
+            if (success) {
+              this.pendingPermissions.delete(msg.payload.requestId);
+            }
             this.sendMessage(
               createMessage('PERMISSION_REPLY_RESULT', {
                 deviceId: this.config.deviceId,
@@ -962,6 +1073,9 @@ export class RemoteAgent {
         case 'QUESTION_REPLY': {
           try {
             const success = await this.adapter.replyQuestion(msg.payload.requestId, msg.payload.answers);
+            if (success) {
+              this.pendingQuestions.delete(msg.payload.requestId);
+            }
             this.sendMessage(
               createMessage('QUESTION_REPLY_RESULT', {
                 deviceId: this.config.deviceId,

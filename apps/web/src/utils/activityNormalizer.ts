@@ -172,6 +172,7 @@ export function normalizeConversationTurns(
         (msg.role === 'assistant' ? (msg.content || textPart?.text) : '') ||
         'Session context was summarized and compacted to preserve memory.';
       const summaryText = rawSummaryText
+        .replace(/\[SUPERMEMORY\][\s\S]*?(?=\n\n|$)/gi, '')
         .replace(/<supermemory-recall>[\s\S]*?<\/supermemory-recall>/gi, '')
         .trim();
 
@@ -424,8 +425,9 @@ export function normalizeConversationTurns(
       }
 
       // 3. TEXT PART
-      if (part.type === 'text') {
+      if (part.type === 'text' && !partAny.synthetic) {
         const clean = (part.text || '')
+          .replace(/\[SUPERMEMORY\][\s\S]*?(?=\n\n|$)/gi, '')
           .replace(/<supermemory-recall>[\s\S]*?<\/supermemory-recall>/gi, '')
           .trim();
         if (clean) {
@@ -438,6 +440,7 @@ export function normalizeConversationTurns(
     // If message had top-level content and no finalResponse yet
     if (msg.content && !turn.finalResponse) {
       const clean = msg.content
+        .replace(/\[SUPERMEMORY\][\s\S]*?(?=\n\n|$)/gi, '')
         .replace(/<supermemory-recall>[\s\S]*?<\/supermemory-recall>/gi, '')
         .trim();
       if (clean) {

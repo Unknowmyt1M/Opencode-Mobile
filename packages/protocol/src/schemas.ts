@@ -431,20 +431,26 @@ export const QueuedMessageSchema = z.object({
   error: z.string().optional(),
 });
 
+export const QuestionItemSchema = z.object({
+  id: z.string(),
+  sessionID: z.string().optional(),
+  questions: z.array(z.unknown()).optional(),
+  time: z.number().optional(),
+});
+
 export const SessionRuntimeSnapshotSchema = z.object({
   status: z.enum(['idle', 'busy', 'error']),
   isStreaming: z.boolean(),
+  agentInstanceId: z.string().min(1).max(64),
+  snapshotSequence: z.number().int().nonnegative(),
+  activeTurnId: z.string().optional(),
   activeMessageId: z.string().optional(),
   streamingText: z.string().optional(),
   parts: z.array(MessagePartSchema).optional(),
-  todos: z.array(TodoItemSchema).optional(),
-  diffs: z.array(SnapshotFileDiffSchema).optional(),
-  pendingPermission: PermissionItemSchema.optional(),
-  pendingQuestion: z.object({
-    requestId: z.string(),
-    sessionId: z.string(),
-    questions: z.array(z.unknown()).optional(),
-  }).optional(),
+  todos: z.array(TodoItemSchema).default([]),
+  diffs: z.array(SnapshotFileDiffSchema).default([]),
+  pendingPermissions: z.array(PermissionItemSchema).default([]),
+  pendingQuestions: z.array(QuestionItemSchema).default([]),
   lastEventSequence: z.number().optional(),
 });
 
@@ -463,7 +469,26 @@ export const SessionGetResultMessageSchema = z.object({
     diffs: z.array(SnapshotFileDiffSchema).optional(),
     todos: z.array(TodoItemSchema).optional(),
     runtime: SessionRuntimeSnapshotSchema.optional(),
-    queue: z.array(QueuedMessageSchema).optional(),
+  }),
+});
+
+export const QueueStateSchema = z.object({
+  deviceId: z.string().min(1).max(128),
+  sessionId: z.string().min(1).max(128),
+  revision: z.number().int().nonnegative(),
+  messages: z.array(QueuedMessageSchema),
+  updatedAt: z.number().int().positive(),
+});
+
+export const SessionQueueGetMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_QUEUE_GET'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
   }),
 });
 
@@ -475,8 +500,39 @@ export const SessionQueueUpdateMessageSchema = z.object({
   payload: z.object({
     deviceId: z.string().min(1).max(128),
     sessionId: z.string().min(1).max(128),
+    clientId: z.string().min(1).max(64).optional(),
+    mutationId: z.string().min(1).max(64).optional(),
+    baseRevision: z.number().int().nonnegative().optional(),
     queue: z.array(QueuedMessageSchema),
     deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const SessionQueueUpdateResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_QUEUE_UPDATE_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    accepted: z.boolean(),
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    revision: z.number().int().nonnegative(),
+    mutationId: z.string().max(64).optional(),
+  }),
+});
+
+export const SessionQueueConflictMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('SESSION_QUEUE_CONFLICT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(128),
+    currentRevision: z.number().int().nonnegative(),
+    authoritativeQueue: z.array(QueuedMessageSchema),
+    rejectedMutationId: z.string().max(64).optional(),
   }),
 });
 
@@ -489,6 +545,8 @@ export const SessionQueueSyncMessageSchema = z.object({
     deviceId: z.string().min(1).max(128),
     sessionId: z.string().min(1).max(128),
     queue: z.array(QueuedMessageSchema),
+    revision: z.number().int().nonnegative().optional(),
+    mutationId: z.string().max(64).optional(),
   }),
 });
 
@@ -609,6 +667,9 @@ export const MessageStartedMessageSchema = z.object({
     messageId: z.string().min(1).max(128),
     timestamp: z.number().int().positive(),
     sequence: z.number().int().nonnegative().optional(),
+    agentInstanceId: z.string().max(64).optional(),
+    scope: z.enum(['session', 'device', 'global']).optional(),
+    eventId: z.string().max(64).optional(),
   }),
 });
 
@@ -623,6 +684,9 @@ export const MessageDeltaMessageSchema = z.object({
     messageId: z.string().min(1).max(128),
     delta: z.string(),
     sequence: z.number().int().nonnegative(),
+    agentInstanceId: z.string().max(64).optional(),
+    scope: z.enum(['session', 'device', 'global']).optional(),
+    eventId: z.string().max(64).optional(),
   }),
 });
 
@@ -638,6 +702,9 @@ export const MessageCompletedMessageSchema = z.object({
     totalText: z.string().optional(),
     timestamp: z.number().int().positive(),
     sequence: z.number().int().nonnegative().optional(),
+    agentInstanceId: z.string().max(64).optional(),
+    scope: z.enum(['session', 'device', 'global']).optional(),
+    eventId: z.string().max(64).optional(),
   }),
 });
 
@@ -652,6 +719,9 @@ export const MessageErrorMessageSchema = z.object({
     messageId: z.string().max(128).optional(),
     error: z.string().max(1024),
     sequence: z.number().int().nonnegative().optional(),
+    agentInstanceId: z.string().max(64).optional(),
+    scope: z.enum(['session', 'device', 'global']).optional(),
+    eventId: z.string().max(64).optional(),
   }),
 });
 
@@ -665,6 +735,9 @@ export const OpenCodeEventMessageSchema = z.object({
     eventType: z.string().min(1).max(128),
     payload: z.unknown(),
     sequence: z.number().int().nonnegative(),
+    agentInstanceId: z.string().max(64).optional(),
+    scope: z.enum(['session', 'device', 'global']).optional(),
+    eventId: z.string().max(64).optional(),
   }),
 });
 
@@ -1259,7 +1332,10 @@ export const MessageSchema = z.discriminatedUnion('type', [
   FsReadMessageSchema,
   FsReadResultMessageSchema,
   // Queue Synchronization
+  SessionQueueGetMessageSchema,
   SessionQueueUpdateMessageSchema,
+  SessionQueueUpdateResultMessageSchema,
+  SessionQueueConflictMessageSchema,
   SessionQueueSyncMessageSchema,
   // Infra
   PingMessageSchema,
