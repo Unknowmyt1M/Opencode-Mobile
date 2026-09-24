@@ -6,11 +6,9 @@ import {
   AlertCircle,
   X,
   Plus,
-  MessageSquare,
   FileCheck2,
   Activity,
   Sparkles,
-  ChevronRight,
   Loader2,
   Folder,
 } from 'lucide-react';
@@ -24,7 +22,7 @@ import { AgentWorkTimeline } from './components/AgentWorkTimeline';
 import { SessionLoadingSkeleton } from './components/SessionLoadingSkeleton';
 import { SessionTelemetryModal } from './components/SessionTelemetryModal';
 import { FileTreeExplorer } from './components/FileTreeExplorer';
-import { ProjectSelector } from './components/ProjectSelector';
+import { ProjectSessionTree } from './components/ProjectSessionTree';
 import { normalizeConversationTurns, type TurnGroup } from './utils/activityNormalizer';
 
 export default function App() {
@@ -35,7 +33,6 @@ export default function App() {
     setSelectedDeviceId,
     projects,
     selectedProjectId,
-    selectedProject,
     selectProject,
     fetchProjects,
     sessions,
@@ -107,8 +104,6 @@ export default function App() {
   // Right pane tab on desktop (review, terminal, activity, files)
   const [rightPanelTab, setRightPanelTab] = useState<'review' | 'terminal' | 'activity' | 'files'>('review');
   const [showRightPanel, setShowRightPanel] = useState<boolean>(true);
-  const [newSessionTitle, setNewSessionTitle] = useState('');
-  const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [showTelemetryModal, setShowTelemetryModal] = useState(false);
   const [isCompacting, setIsCompacting] = useState(false);
 
@@ -159,22 +154,6 @@ export default function App() {
     openSession,
     sessionStatuses,
   ]);
-
-  const handleCreateSessionSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedDevice) return;
-    const title = newSessionTitle.trim() || undefined;
-    setIsCreatingSession(true);
-    try {
-      const sess = await createSession(selectedDevice.deviceId, title);
-      setNewSessionTitle('');
-      if (sess?.id) {
-        openSession(selectedDevice.deviceId, sess.id);
-      }
-    } finally {
-      setIsCreatingSession(false);
-    }
-  };
 
   return (
     <div className="h-full h-dvh w-full overflow-hidden bg-[#090d16] text-slate-100 flex flex-col font-sans select-none">
@@ -237,112 +216,27 @@ export default function App() {
               />
             </div>
 
-            {/* Workspace / Project Context Selector */}
-            {selectedDevice && (
-              <ProjectSelector
-                projects={projects}
-                selectedProjectId={selectedProjectId}
-                onSelectProject={selectProject}
-              />
-            )}
           </div>
 
-          {/* Sessions List */}
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
-            <div className="flex items-center justify-between px-2 py-1 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
-              <span>Sessions ({sessions.length})</span>
-              <button
-                type="button"
-                onClick={() => {
-                  if (selectedDevice) {
-                    createSession(selectedDevice.deviceId);
-                  }
-                }}
-                className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
-                title="Create session"
-              >
-                <Plus className="w-3.5 h-3.5" />
-              </button>
-            </div>
-
-            {/* Quick Session Create Form */}
-            <form onSubmit={handleCreateSessionSubmit} className="px-2 py-1 mb-1">
-              <input
-                type="text"
-                value={newSessionTitle}
-                onChange={(e) => setNewSessionTitle(e.target.value)}
-                disabled={isCreatingSession}
-                placeholder={selectedProject ? `+ New session in ${selectedProject.name}...` : '+ New session title...'}
-                className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-slate-900 border border-slate-800 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-sans disabled:opacity-50"
-              />
-            </form>
-
-            {sessions.length === 0 ? (
-              <div className="p-4 text-center text-slate-500 text-xs">
-                {selectedProject
-                  ? `No sessions in ${selectedProject.name}`
-                  : 'No active sessions'}
-              </div>
-            ) : (
-              sessions.map((sess) => {
-                const isActive = activeSession?.session.id === sess.id;
-                const isItemLoading = sess.id === loadingSessionId;
-                const isBusy = sessionStatuses[sess.id] === 'busy';
-                const projectName = !selectedProject && sess.directory
-                  ? sess.directory.replace(/\\/g, '/').split('/').filter(Boolean).pop()
-                  : null;
-
-                return (
-                  <button
-                    key={sess.id}
-                    type="button"
-                    disabled={isItemLoading}
-                    onClick={() => {
-                      if (selectedDevice) {
-                        openSession(selectedDevice.deviceId, sess.id, sess.directory);
-                      }
-                    }}
-                    className={`w-full text-left p-2 rounded-xl text-xs transition-all flex items-center justify-between group cursor-pointer ${
-                      isActive
-                        ? 'bg-indigo-600 text-white font-medium shadow-md shadow-indigo-600/20'
-                        : isItemLoading
-                        ? 'bg-indigo-950/40 text-indigo-300 border border-indigo-500/30 cursor-wait'
-                        : 'text-slate-300 hover:bg-slate-900 hover:text-white'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 min-w-0 pr-2">
-                      {isItemLoading ? (
-                        <Loader2 className="w-3.5 h-3.5 shrink-0 text-indigo-400 animate-spin" />
-                      ) : isBusy ? (
-                        <span className="relative flex h-2.5 w-2.5 shrink-0">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-                        </span>
-                      ) : (
-                        <MessageSquare className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-white' : 'text-slate-400'}`} />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-medium">{sess.title || 'Untitled Session'}</p>
-                        {projectName && (
-                          <p className={`text-[10px] truncate font-mono mt-0.5 ${isActive ? 'text-indigo-200' : 'text-slate-500'}`}>
-                            {projectName}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    {isItemLoading ? (
-                      <span className="text-[10px] font-mono text-indigo-400 animate-pulse">Loading...</span>
-                    ) : (
-                      <ChevronRight
-                        className={`w-3.5 h-3.5 shrink-0 transition-transform ${
-                          isActive ? 'text-white translate-x-0.5' : 'text-slate-600 group-hover:text-slate-400'
-                        }`}
-                      />
-                    )}
-                  </button>
-                );
-              })
-            )}
+          {/* Collapsible Project & Session Tree */}
+          <div className="flex-1 overflow-hidden">
+            <ProjectSessionTree
+              projects={projects}
+              sessions={sessions}
+              activeSessionId={activeSession?.session.id}
+              loadingSessionId={loadingSessionId}
+              sessionStatuses={sessionStatuses}
+              onSelectSession={(sess) => {
+                if (selectedDevice) {
+                  openSession(selectedDevice.deviceId, sess.id, sess.directory);
+                }
+              }}
+              onCreateSession={(title, directory) => {
+                if (selectedDevice) {
+                  createSession(selectedDevice.deviceId, title, directory);
+                }
+              }}
+            />
           </div>
 
           {/* Bottom Rail Actions */}
