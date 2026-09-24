@@ -82,6 +82,7 @@ export interface SessionMessage {
   cost?: number;
   providerID?: string;
   modelID?: string;
+  clientMessageId?: string;
 }
 
 export interface SnapshotFileDiff {
@@ -300,8 +301,19 @@ export interface QuestionItem {
   time?: number;
 }
 
+export type SessionRuntimeStatus =
+  | 'idle'
+  | 'busy'
+  | 'streaming'
+  | 'thinking'
+  | 'tool_executing'
+  | 'waiting_permission'
+  | 'waiting_question'
+  | 'compacting'
+  | 'error';
+
 export interface SessionRuntimeSnapshot {
-  status: 'idle' | 'busy' | 'error';
+  status: SessionRuntimeStatus;
   isStreaming: boolean;
   agentInstanceId: string;
   snapshotSequence: number;
@@ -401,6 +413,7 @@ export interface MessageSendPayload {
   deviceId: string;
   sessionId: string;
   content: string;
+  clientMessageId?: string;
   deviceToken?: string;
   model?: {
     providerID: string;
@@ -412,6 +425,7 @@ export interface MessageSendAckPayload {
   deviceId: string;
   sessionId: string;
   messageId: string;
+  clientMessageId?: string;
   status: 'accepted' | 'rejected';
 }
 
@@ -419,6 +433,7 @@ export interface MessageStartedPayload {
   deviceId: string;
   sessionId: string;
   messageId: string;
+  clientMessageId?: string;
   timestamp: number;
   sequence?: number;
   agentInstanceId?: string;

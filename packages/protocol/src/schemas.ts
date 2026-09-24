@@ -75,6 +75,7 @@ export const SessionMessageSchema = z.object({
   cost: z.number().optional(),
   providerID: z.string().optional(),
   modelID: z.string().optional(),
+  clientMessageId: z.string().max(128).optional(),
 });
 
 export const SnapshotFileDiffSchema = z.object({
@@ -439,7 +440,17 @@ export const QuestionItemSchema = z.object({
 });
 
 export const SessionRuntimeSnapshotSchema = z.object({
-  status: z.enum(['idle', 'busy', 'error']),
+  status: z.enum([
+    'idle',
+    'busy',
+    'streaming',
+    'thinking',
+    'tool_executing',
+    'waiting_permission',
+    'waiting_question',
+    'compacting',
+    'error',
+  ]),
   isStreaming: z.boolean(),
   agentInstanceId: z.string().min(1).max(64),
   snapshotSequence: z.number().int().nonnegative(),
@@ -635,6 +646,7 @@ export const MessageSendMessageSchema = z.object({
     deviceId: z.string().min(1).max(128),
     sessionId: z.string().min(1).max(128),
     content: z.string().min(1).max(65536),
+    clientMessageId: z.string().max(128).optional(),
     deviceToken: z.string().max(256).optional(),
     model: z.object({
       providerID: z.string().min(1),
@@ -652,6 +664,7 @@ export const MessageSendAckMessageSchema = z.object({
     deviceId: z.string().min(1).max(128),
     sessionId: z.string().min(1).max(128),
     messageId: z.string().min(1).max(128),
+    clientMessageId: z.string().max(128).optional(),
     status: z.enum(['accepted', 'rejected']),
   }),
 });
@@ -665,6 +678,7 @@ export const MessageStartedMessageSchema = z.object({
     deviceId: z.string().min(1).max(128),
     sessionId: z.string().min(1).max(128),
     messageId: z.string().min(1).max(128),
+    clientMessageId: z.string().max(128).optional(),
     timestamp: z.number().int().positive(),
     sequence: z.number().int().nonnegative().optional(),
     agentInstanceId: z.string().max(64).optional(),

@@ -62,6 +62,7 @@ export function useMessageQueue({
   onQueueUpdate,
 }: UseMessageQueueOptions) {
   const [queues, setQueues] = useState<Record<string, QueuedMessage[]>>(loadQueuesFromStorage);
+  const queuesRef = useRef<Record<string, QueuedMessage[]>>(queues);
   const [editingItem, setEditingItem] = useState<{ id: string; sessionId: string; content: string } | null>(null);
 
   const onQueueUpdateRef = useRef(onQueueUpdate);
@@ -73,7 +74,7 @@ export function useMessageQueue({
   const dispatchingSessionsRef = useRef<Set<string>>(new Set());
   const prevStreamingBySessionRef = useRef<Record<string, boolean>>({});
 
-  // Persist queues on change
+  // Best-effort cache in localStorage (not authoritative)
   useEffect(() => {
     saveQueuesToStorage(queues);
   }, [queues]);
@@ -86,6 +87,10 @@ export function useMessageQueue({
     if (typeof revision === 'number') {
       revisionsRef.current[sessionId] = revision;
     }
+    queuesRef.current = {
+      ...queuesRef.current,
+      [sessionId]: newQueue,
+    };
     setQueues((prev) => {
       const curr = prev[sessionId] || [];
       if (
@@ -106,11 +111,17 @@ export function useMessageQueue({
     });
   }, []);
 
-  // Dispatch local mutation: strictly pure state updater + network dispatch OUTSIDE updater
+  // Dispatch local mutation: derived from ref to prevent stale closure overwrites
   const dispatchMutation = useCallback(
     (sessionId: string, nextQueue: QueuedMessage[]) => {
       const baseRevision = revisionsRef.current[sessionId] || 0;
+      revisionsRef.current[sessionId] = baseRevision + 1;
       const mutationId = `mut_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+      queuesRef.current = {
+        ...queuesRef.current,
+        [sessionId]: nextQueue,
+      };
 
       setQueues((prev) => {
         const updated = { ...prev };
@@ -145,13 +156,13 @@ export function useMessageQueue({
         retryCount: 0,
       };
 
-      const existing = queues[sessionId] || [];
+      const existing = queuesRef.current[sessionId] || [];
       const updated = [...existing, item];
       dispatchMutation(sessionId, updated);
 
       return item;
     },
-    [queues, dispatchMutation]
+    [dispatchMutation]
   );
 
   // Edit a queued message content
@@ -159,23 +170,23 @@ export function useMessageQueue({
     (sessionId: string, id: string, newContent: string) => {
       const clean = newContent.trim();
       if (!clean) return;
-      const existing = queues[sessionId] || [];
+      const existing = queuesRef.current[sessionId] || [];
       const updated = existing.map((m) => (m.id === id ? { ...m, content: clean } : m));
       dispatchMutation(sessionId, updated);
       setEditingItem((curr) => (curr?.id === id ? null : curr));
     },
-    [queues, dispatchMutation]
+    [dispatchMutation]
   );
 
   // Remove a message from queue
   const remove = useCallback(
     (sessionId: string, id: string) => {
-      const existing = queues[sessionId] || [];
+      const existing = queuesRef.current[sessionId] || [];
       const filtered = existing.filter((m) => m.id !== id);
       dispatchMutation(sessionId, filtered);
       setEditingItem((curr) => (curr?.id === id ? null : curr));
     },
-    [queues, dispatchMutation]
+    [dispatchMutation]
   );
 
   // Send Now action:
@@ -206,7 +217,7 @@ export function useMessageQueue({
       dispatchingSessionsRef.current.add(sessionId);
 
       try {
-        const sendingList = (queues[sessionId] || []).map((m) =>
+        const sendingList = (queuesRef.current[sessionId] || []).map((m) =>
           m.id === id ? { ...m, status: 'sending' as const } : m
         );
         dispatchMutation(sessionId, sendingList);
@@ -214,7 +225,7 @@ export function useMessageQueue({
         await onSendMessage(selectedDeviceId, sessionId, item.content, item.model);
         remove(sessionId, id);
       } catch (err: any) {
-        const failedList = (queues[sessionId] || []).map((m) =>
+        const failedList = (queuesRef.current[sessionId] || []).map((m) =>
           m.id === id ? { ...m, status: 'failed' as const, error: err.message || 'Send failed' } : m
         );
         dispatchMutation(sessionId, failedList);
@@ -222,13 +233,13 @@ export function useMessageQueue({
         dispatchingSessionsRef.current.delete(sessionId);
       }
     },
-    [selectedDeviceId, isStreaming, queues, dispatchMutation, onSendMessage, remove]
+    [selectedDeviceId, isStreaming, dispatchMutation, onSendMessage, remove]
   );
 
   // Retry a failed message
   const retry = useCallback(
     async (sessionId: string, id: string) => {
-      const updated = (queues[sessionId] || []).map((m) =>
+      const updated = (queuesRef.current[sessionId] || []).map((m) =>
         m.id === id ? { ...m, status: 'queued' as const, error: undefined, retryCount: (m.retryCount || 0) + 1 } : m
       );
       dispatchMutation(sessionId, updated);
@@ -237,7 +248,7 @@ export function useMessageQueue({
         await sendNow(sessionId, id);
       }
     },
-    [isStreaming, queues, dispatchMutation, sendNow]
+    [isStreaming, dispatchMutation, sendNow]
   );
 
   // Clear all queued messages for a session

@@ -13,6 +13,7 @@ import {
   type PtySession,
   type ModelInfo,
   type PermissionItem,
+  type QuestionItem,
   type PtyListResultPayload,
   type PtyCreateResultPayload,
   type SessionAbortResultPayload,
@@ -102,7 +103,9 @@ export function useRelay(relayWsUrl?: string) {
     }
   }, []);
 
-  const [permissions, setPermissions] = useState<PermissionItem[]>([]);
+  const [permissions, setPermissions] = useState<Record<string, PermissionItem[]>>({});
+  const [questions, setQuestions] = useState<Record<string, QuestionItem[]>>({});
+  const deviceTransitionGenerationRef = useRef<number>(0);
   const [sessionStatuses, setSessionStatuses] = useState<Record<string, string>>({});
   const fetchTodosRef = useRef<((deviceId: string, sessionId: string) => void) | null>(null);
   const fetchSessionsRef = useRef<((deviceId: string) => Promise<any>) | null>(null);
@@ -140,6 +143,8 @@ export function useRelay(relayWsUrl?: string) {
   const prevDeviceIdRef = useRef<string | null>(selectedDeviceId);
   useEffect(() => {
     if (prevDeviceIdRef.current && prevDeviceIdRef.current !== selectedDeviceId) {
+      deviceTransitionGenerationRef.current++;
+      const currentGen = deviceTransitionGenerationRef.current;
       // Switched to a different device - reset auxiliary states but avoid destructive wipe to prevent white flash
       setActiveDiffFile(null);
       setActivePtyId(null);
@@ -148,6 +153,7 @@ export function useRelay(relayWsUrl?: string) {
 
       if (selectedDeviceId && fetchSessionsRef.current) {
         fetchSessionsRef.current(selectedDeviceId).then((loadedSessions: OpenCodeSession[]) => {
+          if (deviceTransitionGenerationRef.current !== currentGen) return; // Stale device response discarded!
           if (!loadedSessions || loadedSessions.length === 0) {
             setActiveSession(null);
             return;
@@ -547,19 +553,25 @@ export function useRelay(relayWsUrl?: string) {
                 }
               }
 
-              const isStreaming = Boolean(runtime?.isStreaming || payload.isStreaming);
-              const activeMsgId = runtime?.activeMessageId || payload.activeMessageId;
-              const accumulatedText = runtime?.streamingText || payload.streamingText || '';
-              const parts = runtime?.parts || [];
-              const diffs = runtime?.diffs || payload.diffs || [];
-              const sessionTodos = runtime?.todos || payload.todos || [];
+              const isStreaming = Boolean(runtime?.isStreaming ?? payload.isStreaming);
+              const activeMsgId = runtime?.activeMessageId ?? payload.activeMessageId;
+              const accumulatedText = runtime?.streamingText ?? payload.streamingText ?? '';
+              const parts = runtime?.parts ?? [];
+              const diffs = runtime?.diffs ?? payload.diffs ?? [];
+              const sessionTodos = runtime?.todos ?? payload.todos ?? [];
 
-              // Ingest multi-permissions
+              // Ingest multi-permissions and questions (session-scoped)
               if (Array.isArray(runtime?.pendingPermissions)) {
-                setPermissions((prev) => {
-                  const others = prev.filter((p) => p.sessionID && p.sessionID !== session.id);
-                  return [...others, ...runtime.pendingPermissions];
-                });
+                setPermissions((prev) => ({
+                  ...prev,
+                  [session.id]: runtime.pendingPermissions,
+                }));
+              }
+              if (Array.isArray(runtime?.pendingQuestions)) {
+                setQuestions((prev) => ({
+                  ...prev,
+                  [session.id]: runtime.pendingQuestions,
+                }));
               }
 
               // Authoritative in-flight message hydration
@@ -695,7 +707,7 @@ export function useRelay(relayWsUrl?: string) {
             }
 
             case 'MESSAGE_STARTED': {
-              const { sessionId, messageId, timestamp, sequence, agentInstanceId } = msg.payload as any;
+              const { sessionId, messageId, timestamp, sequence, agentInstanceId, clientMessageId } = msg.payload as any;
               if (!sessionId) break;
               handleEventSequence(sessionId, sequence, agentInstanceId);
               setSessionStatuses((prev) => ({ ...prev, [sessionId]: 'busy' }));
@@ -722,12 +734,25 @@ export function useRelay(relayWsUrl?: string) {
               if (activeSessionRef.current?.session?.id === sessionId) {
                 setActiveSession((curr) => {
                   if (!curr || curr.session.id !== sessionId) return curr;
-                  const exists = curr.messages.some((m) => m.id === messageId);
-                  if (exists) return curr;
+                  const msgs = [...curr.messages];
+                  // Deterministic reconcile optimistic user message if clientMessageId is present
+                  if (clientMessageId) {
+                    const uIdx = msgs.findIndex(
+                      (m) => m.clientMessageId === clientMessageId || m.id === clientMessageId
+                    );
+                    if (uIdx >= 0) {
+                      msgs[uIdx] = {
+                        ...msgs[uIdx],
+                        clientMessageId,
+                      };
+                    }
+                  }
+                  const exists = msgs.some((m) => m.id === messageId);
+                  if (exists) return { ...curr, messages: msgs };
                   return {
                     ...curr,
                     messages: [
-                      ...curr.messages,
+                      ...msgs,
                       {
                         id: messageId,
                         sessionId,
@@ -738,6 +763,29 @@ export function useRelay(relayWsUrl?: string) {
                       },
                     ],
                   };
+                });
+              }
+              break;
+            }
+
+            case 'MESSAGE_SEND_ACK': {
+              const { sessionId, messageId, clientMessageId } = msg.payload as any;
+              if (!sessionId || !clientMessageId) break;
+              if (activeSessionRef.current?.session?.id === sessionId) {
+                setActiveSession((curr) => {
+                  if (!curr || curr.session.id !== sessionId) return curr;
+                  const idx = curr.messages.findIndex(
+                    (m) => m.clientMessageId === clientMessageId || m.id === clientMessageId
+                  );
+                  if (idx >= 0 && messageId) {
+                    const nextMsgs = [...curr.messages];
+                    nextMsgs[idx] = {
+                      ...nextMsgs[idx],
+                      id: messageId,
+                    };
+                    return { ...curr, messages: nextMsgs };
+                  }
+                  return curr;
                 });
               }
               break;
@@ -896,6 +944,7 @@ export function useRelay(relayWsUrl?: string) {
                 const promptText = props.prompt?.text || '';
                 const messageId = props.messageID;
                 const timestamp = props.timestamp || Date.now();
+                const incomingClientMsgId = props.prompt?.clientMessageId || props.clientMessageId;
 
                 if (activeSessionRef.current && activeSessionRef.current.session.id === sessionId) {
                   setActiveSession((curr) => {
@@ -903,6 +952,7 @@ export function useRelay(relayWsUrl?: string) {
                     const msgs = [...curr.messages];
                     const existingIdx = msgs.findIndex(
                       (m) =>
+                        (incomingClientMsgId && m.clientMessageId === incomingClientMsgId) ||
                         m.id === messageId ||
                         (m.role === 'user' && m.id.startsWith('user_') && m.content === promptText)
                     );
@@ -932,6 +982,7 @@ export function useRelay(relayWsUrl?: string) {
                 const messageId = info.id;
                 const content = info.content || '';
                 const timestamp = info.time?.created || Date.now();
+                const incomingClientMsgId = info.clientMessageId || props.clientMessageId;
 
                 if (activeSessionRef.current && activeSessionRef.current.session.id === sessionId) {
                   setActiveSession((curr) => {
@@ -939,6 +990,7 @@ export function useRelay(relayWsUrl?: string) {
                     const msgs = [...curr.messages];
                     const existingIdx = msgs.findIndex(
                       (m) =>
+                        (incomingClientMsgId && m.clientMessageId === incomingClientMsgId) ||
                         m.id === messageId ||
                         (m.role === 'user' && m.id.startsWith('user_') && m.content === content)
                     );
@@ -991,15 +1043,71 @@ export function useRelay(relayWsUrl?: string) {
                 }));
               }
 
+              // Handle native OpenCode permission asked
+              if (eventType === 'permission.asked' || eventType === 'permission.v2.asked') {
+                const permId = props.id || props.requestID || props.requestId;
+                const sId = sessionId || props.sessionID || props.sessionId || activeSessionRef.current?.session?.id || 'default';
+                if (permId) {
+                  const permItem: PermissionItem = {
+                    id: permId,
+                    title: props.title || props.description || 'Permission Requested',
+                    command: props.command,
+                    sessionID: sId,
+                    time: props.time || Date.now(),
+                  };
+                  playSound('permission');
+                  setPermissions((prev) => ({
+                    ...prev,
+                    [sId]: [...(prev[sId] || []).filter((item) => item.id !== permId), permItem],
+                  }));
+                }
+              }
+
               // Handle native OpenCode permission resolved / replied
               if (
                 (eventType === 'permission.replied' || eventType === 'permission.v2.replied') &&
                 (props.requestID || props.requestId || props.id)
               ) {
                 const targetReqId = props.requestID || props.requestId || props.id;
-                setPermissions((prev) =>
-                  prev.filter((p) => p.id !== targetReqId && (p as any).requestId !== targetReqId)
-                );
+                setPermissions((prev) => {
+                  const next = { ...prev };
+                  for (const sId of Object.keys(next)) {
+                    next[sId] = next[sId].filter((p) => p.id !== targetReqId && (p as any).requestId !== targetReqId);
+                  }
+                  return next;
+                });
+              }
+
+              // Handle native OpenCode question asked / replied
+              if (eventType === 'question.asked' || eventType === 'question.v2.asked') {
+                const qId = props.id || props.requestID || props.requestId;
+                const sId = sessionId || props.sessionID || props.sessionId || activeSessionRef.current?.session?.id || 'default';
+                if (qId) {
+                  const qItem: QuestionItem = {
+                    id: qId,
+                    sessionID: sId,
+                    questions: props.questions || [],
+                    time: props.time || Date.now(),
+                  };
+                  setQuestions((prev) => ({
+                    ...prev,
+                    [sId]: [...(prev[sId] || []).filter((item) => item.id !== qId), qItem],
+                  }));
+                }
+              }
+
+              if (
+                (eventType === 'question.replied' || eventType === 'question.rejected') &&
+                (props.requestID || props.requestId || props.id)
+              ) {
+                const targetQId = props.requestID || props.requestId || props.id;
+                setQuestions((prev) => {
+                  const next = { ...prev };
+                  for (const sId of Object.keys(next)) {
+                    next[sId] = next[sId].filter((q) => q.id !== targetQId);
+                  }
+                  return next;
+                });
               }
 
               // Handle message.part.updated or message.part
@@ -1113,15 +1221,19 @@ export function useRelay(relayWsUrl?: string) {
               const p = msg.payload as any;
               const permId = p.id || p.requestId;
               if (permId) {
+                const sId = p.sessionId || p.sessionID || activeSessionRef.current?.session?.id || 'default';
                 const permItem: PermissionItem = {
                   id: permId,
                   title: p.title || p.description,
                   command: p.command,
-                  sessionID: p.sessionId,
+                  sessionID: sId,
                   time: p.time || Date.now(),
                 };
                 playSound('permission');
-                setPermissions((prev) => [...prev.filter((item) => item.id !== permId), permItem]);
+                setPermissions((prev) => ({
+                  ...prev,
+                  [sId]: [...(prev[sId] || []).filter((item) => item.id !== permId), permItem],
+                }));
               }
               break;
             }
@@ -1129,9 +1241,13 @@ export function useRelay(relayWsUrl?: string) {
             case 'PERMISSION_REPLY_RESULT': {
               const { requestId, success } = msg.payload;
               if (success && requestId) {
-                setPermissions((prev) =>
-                  prev.filter((p) => p.id !== requestId && (p as any).requestId !== requestId)
-                );
+                setPermissions((prev) => {
+                  const next = { ...prev };
+                  for (const sId of Object.keys(next)) {
+                    next[sId] = next[sId].filter((p) => p.id !== requestId && (p as any).requestId !== requestId);
+                  }
+                  return next;
+                });
               }
               break;
             }
@@ -1356,6 +1472,7 @@ export function useRelay(relayWsUrl?: string) {
   const openSession = useCallback(
     async (deviceId: string, sessionId: string) => {
       latestRequestedSessionIdRef.current = sessionId;
+      const currentDevGen = deviceTransitionGenerationRef.current;
       setIsLoadingSession(true);
       setLoadingSessionId(sessionId);
       try {
@@ -1365,7 +1482,11 @@ export function useRelay(relayWsUrl?: string) {
           deviceToken: deviceTokens[deviceId],
         });
         const res = await sendRpc<{ session: OpenCodeSession; messages: SessionMessage[] }>(msg);
-        if (res.session && latestRequestedSessionIdRef.current === sessionId) {
+        if (
+          deviceTransitionGenerationRef.current === currentDevGen &&
+          res.session &&
+          latestRequestedSessionIdRef.current === sessionId
+        ) {
           setActiveSession(res);
           // Pre-fetch diffs, workspace context, and todos
           fetchSessionDiff(deviceId, sessionId);
@@ -1402,8 +1523,10 @@ export function useRelay(relayWsUrl?: string) {
         isWaitingForResponse: true,
         error: null,
       }));
+      const clientMessageId = `cmsg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
       const userMsg: SessionMessage = {
         id: `user_${Date.now()}`,
+        clientMessageId,
         sessionId,
         role: 'user',
         content,
@@ -1422,6 +1545,7 @@ export function useRelay(relayWsUrl?: string) {
         deviceId,
         sessionId,
         content,
+        clientMessageId,
         deviceToken: token,
         model,
       });
@@ -1688,7 +1812,7 @@ export function useRelay(relayWsUrl?: string) {
     if (!selectedDevice) return;
     const token = deviceTokensRef.current[selectedDevice.deviceId];
     if (!token) {
-      setPermissions([]);
+      setPermissions({});
       return;
     }
     try {
@@ -1698,7 +1822,14 @@ export function useRelay(relayWsUrl?: string) {
           deviceToken: token,
         })
       );
-      setPermissions(res.permissions || []);
+      const list = res.permissions || [];
+      const grouped: Record<string, PermissionItem[]> = {};
+      for (const p of list) {
+        const sId = p.sessionID || (p as any).sessionId || 'default';
+        if (!grouped[sId]) grouped[sId] = [];
+        grouped[sId].push(p);
+      }
+      setPermissions(grouped);
     } catch (err: any) {
       console.warn('Failed to fetch permissions:', err.message);
     }
@@ -1717,7 +1848,13 @@ export function useRelay(relayWsUrl?: string) {
             reply,
           })
         );
-        setPermissions((prev) => prev.filter((p) => p.id !== requestId));
+        setPermissions((prev) => {
+          const next = { ...prev };
+          for (const sId of Object.keys(next)) {
+            next[sId] = next[sId].filter((p) => p.id !== requestId);
+          }
+          return next;
+        });
         return res.success;
       } catch {
         return false;
@@ -1729,8 +1866,14 @@ export function useRelay(relayWsUrl?: string) {
   const activePermissions = useMemo(() => {
     const currentId = activeSession?.session?.id;
     if (!currentId) return [];
-    return permissions.filter((p) => !(p as any).sessionId || (p as any).sessionId === currentId);
+    return permissions[currentId] || [];
   }, [permissions, activeSession?.session?.id]);
+
+  const activeQuestions = useMemo(() => {
+    const currentId = activeSession?.session?.id;
+    if (!currentId) return [];
+    return questions[currentId] || [];
+  }, [questions, activeSession?.session?.id]);
 
   // ==========================================
   // Phase 1 Modernization: Telemetry & Actions
@@ -1877,6 +2020,15 @@ export function useRelay(relayWsUrl?: string) {
             deviceToken: token,
           })
         );
+        if (res.success) {
+          setQuestions((prev) => {
+            const next = { ...prev };
+            for (const sId of Object.keys(next)) {
+              next[sId] = next[sId].filter((q) => q.id !== requestId);
+            }
+            return next;
+          });
+        }
         return res.success;
       } catch (err: any) {
         console.warn('Failed to reply question:', err.message);
@@ -2012,6 +2164,7 @@ export function useRelay(relayWsUrl?: string) {
     permissions: activePermissions,
     fetchPermissions,
     replyPermission,
+    questions: activeQuestions,
     todos,
     // Phase 1 Modernization: Telemetry & Actions
     sessionTelemetry,

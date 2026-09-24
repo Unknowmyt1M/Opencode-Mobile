@@ -788,8 +788,8 @@ export function buildRelayServer(options: RelayOptions = {}): {
               ensureClientAuthorized(deviceId, deviceToken);
 
               // 1. Idempotency check: if mutationId has already been successfully processed, return cached result
-              if (mutationId && processedMutationIds.has(mutationId)) {
-                const cached = processedMutationIds.get(mutationId)!;
+              if (mutationId && store.hasProcessedMutation(mutationId)) {
+                const cached = store.hasProcessedMutation(mutationId)!;
                 socket.send(
                   JSON.stringify(
                     createMessage('SESSION_QUEUE_UPDATE_RESULT', {
@@ -843,13 +843,7 @@ export function buildRelayServer(options: RelayOptions = {}): {
               store.saveSessionQueue(updatedRecord);
 
               if (mutationId) {
-                processedMutationIds.set(mutationId, { revision: nextRevision, timestamp: Date.now() });
-                if (processedMutationIds.size > 2000) {
-                  const expiry = Date.now() - 3600000;
-                  for (const [id, val] of processedMutationIds) {
-                    if (val.timestamp < expiry) processedMutationIds.delete(id);
-                  }
-                }
+                store.recordProcessedMutation(mutationId, nextRevision);
               }
 
               // 4. Send ACK to requesting client
@@ -1111,6 +1105,13 @@ export function buildRelayServer(options: RelayOptions = {}): {
       });
 
       socket.on('close', () => {
+        // Clean up pending requests registered for this client socket to prevent memory leaks / stale routing
+        for (const [reqId, clientSock] of requestToClient.entries()) {
+          if (clientSock === socket) {
+            requestToClient.delete(reqId);
+          }
+        }
+
         if (registeredDeviceId) {
           registry.clearPtysForDevice(registeredDeviceId);
           registry.unregisterAgent(registeredDeviceId, socket);

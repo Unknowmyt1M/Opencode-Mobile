@@ -29,10 +29,17 @@ export interface PersistedSessionQueueRecord {
   updatedAt: number;
 }
 
+export interface PersistedProcessedMutation {
+  mutationId: string;
+  revision: number;
+  timestamp: number;
+}
+
 export interface RelayStoreDataV2 {
   version: 2;
   devices: PersistedDeviceRecord[];
   sessionQueues?: PersistedSessionQueueRecord[];
+  processedMutations?: PersistedProcessedMutation[];
 }
 
 export interface PairingSession {
@@ -51,6 +58,7 @@ export class RelayStore {
   private filePath: string;
   private devices = new Map<string, PersistedDeviceRecord>(); // deviceId -> record
   private sessionQueues = new Map<string, PersistedSessionQueueRecord>(); // `${deviceId}:${sessionId}` -> record
+  private processedMutations = new Map<string, PersistedProcessedMutation>(); // mutationId -> record
   private activePairings = new Map<string, PairingSession>(); // pairingId -> session
   private codeToPairingId = new Map<string, string>(); // code -> pairingId
 
@@ -118,6 +126,13 @@ export class RelayStore {
             }
           }
         }
+        if (Array.isArray(data.processedMutations)) {
+          for (const pm of data.processedMutations) {
+            if (pm && pm.mutationId) {
+              this.processedMutations.set(pm.mutationId, pm);
+            }
+          }
+        }
       } else if (data && (Array.isArray(data.pairedDevices) || Array.isArray(data.devices))) {
         // Legacy Schema V1: migrate to V2
         const legacyList = data.pairedDevices || data.devices || [];
@@ -179,6 +194,7 @@ export class RelayStore {
           capabilities: d.capabilities,
         })),
         sessionQueues: Array.from(this.sessionQueues.values()),
+        processedMutations: Array.from(this.processedMutations.values()).slice(-2000),
       };
 
       // Atomic write via temporary file + atomic rename
@@ -498,6 +514,25 @@ export class RelayStore {
 
   saveSessionQueue(record: PersistedSessionQueueRecord): void {
     this.sessionQueues.set(`${record.deviceId}:${record.sessionId}`, record);
+    this.persist();
+  }
+
+  hasProcessedMutation(mutationId: string): PersistedProcessedMutation | undefined {
+    return this.processedMutations.get(mutationId);
+  }
+
+  recordProcessedMutation(mutationId: string, revision: number): void {
+    this.processedMutations.set(mutationId, {
+      mutationId,
+      revision,
+      timestamp: Date.now(),
+    });
+    if (this.processedMutations.size > 2000) {
+      const expiry = Date.now() - 86400000;
+      for (const [id, m] of this.processedMutations.entries()) {
+        if (m.timestamp < expiry) this.processedMutations.delete(id);
+      }
+    }
     this.persist();
   }
 

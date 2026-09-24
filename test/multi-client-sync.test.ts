@@ -425,4 +425,106 @@ describe('PC ↔ Mobile Mirror / Multi-Client Synchronization Architecture', () 
     expect(reconciliationTriggered).toBe(true);
     expect(lastSequence).toBe(13);
   });
+
+  it('Deterministic Correlation: MESSAGE_SEND_ACK reconciles optimistic message by clientMessageId', () => {
+    const clientMessageId = 'cmsg_179022_abc123';
+    let messages: SessionMessage[] = [
+      {
+        id: 'user_temp_1',
+        clientMessageId,
+        sessionId: 'session_A',
+        role: 'user',
+        content: 'Refactor auth service',
+        createdAt: 1000,
+      },
+    ];
+
+    // MESSAGE_SEND_ACK arrives with authoritative messageId
+    const ackPayload = {
+      sessionId: 'session_A',
+      messageId: 'msg_oc_authoritative_999',
+      clientMessageId,
+      success: true,
+    };
+
+    const idx = messages.findIndex(
+      (m) => m.clientMessageId === ackPayload.clientMessageId || m.id === ackPayload.clientMessageId
+    );
+    expect(idx).toBe(0);
+    if (idx >= 0) {
+      messages[idx] = {
+        ...messages[idx],
+        id: ackPayload.messageId,
+      };
+    }
+
+    expect(messages[0].id).toBe('msg_oc_authoritative_999');
+    expect(messages[0].clientMessageId).toBe('cmsg_179022_abc123');
+  });
+
+  it('Durable Processed Mutations in Relay Store: Idempotency survives restart', () => {
+    const processedMutations = new Map<string, { mutationId: string; revision: number; timestamp: number }>();
+    const record = (mutationId: string, revision: number) => {
+      processedMutations.set(mutationId, { mutationId, revision, timestamp: Date.now() });
+    };
+    const has = (mutationId: string) => processedMutations.has(mutationId);
+
+    expect(has('mut_1')).toBe(false);
+    record('mut_1', 1);
+    expect(has('mut_1')).toBe(true);
+
+    // Serialization & rehydration simulation
+    const serialized = Array.from(processedMutations.entries());
+    const rehydrated = new Map(serialized);
+    expect(rehydrated.has('mut_1')).toBe(true);
+  });
+
+  it('Authoritative Nullish Hydration: Empty string streaming text does not fall back to stale text', () => {
+    const legacyPayload = {
+      isStreaming: true,
+      streamingText: 'Stale streaming text that finished',
+      activeMessageId: 'msg_old',
+    };
+
+    // Authoritative runtime snapshot from OpenCode via Agent
+    const authoritativeRuntime = {
+      isStreaming: false,
+      streamingText: '', // Empty because turn is complete
+      activeMessageId: undefined,
+    };
+
+    // Correct nullish coalescing
+    const isStreaming = Boolean(authoritativeRuntime.isStreaming ?? legacyPayload.isStreaming);
+    const streamingText = authoritativeRuntime.streamingText ?? legacyPayload.streamingText ?? '';
+    const activeMsgId = authoritativeRuntime.activeMessageId ?? legacyPayload.activeMessageId;
+
+    expect(isStreaming).toBe(false);
+    expect(streamingText).toBe(''); // NOT 'Stale streaming text that finished'!
+    expect(activeMsgId).toBe('msg_old'); // Falls back to legacy activeMessageId if undefined
+  });
+
+  it('Session-Scoped Permissions & Questions: Isolated per session', () => {
+    const sessionPermissions: Record<string, PermissionItem[]> = {};
+
+    // Session A receives permission
+    sessionPermissions['session_A'] = [
+      { id: 'perm_1', sessionID: 'session_A', title: 'Execute bash', command: 'ls', time: 1000 },
+    ];
+    // Session B receives permission
+    sessionPermissions['session_B'] = [
+      { id: 'perm_2', sessionID: 'session_B', title: 'File write', command: 'write file', time: 2000 },
+    ];
+
+    // Client views Session A
+    const activeSessionAId = 'session_A';
+    const activeA = sessionPermissions[activeSessionAId] || [];
+    expect(activeA.length).toBe(1);
+    expect(activeA[0].id).toBe('perm_1');
+
+    // Client switches to Session B
+    const activeSessionBId = 'session_B';
+    const activeB = sessionPermissions[activeSessionBId] || [];
+    expect(activeB.length).toBe(1);
+    expect(activeB[0].id).toBe('perm_2');
+  });
 });

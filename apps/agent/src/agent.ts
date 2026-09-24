@@ -250,7 +250,7 @@ export class RemoteAgent {
     // 1. Text streaming delta
     if ((eventType === 'session.next.text.delta' || eventType === 'session.text.delta' || eventType === 'message.part.delta') && props.delta) {
       ensureStarted();
-      rt.status = 'busy';
+      rt.status = 'streaming';
       rt.streamingText += props.delta;
       const seq = this.nextSessionSequence(sessionId);
       rt.lastEventSequence = seq;
@@ -266,11 +266,21 @@ export class RemoteAgent {
       });
       this.sendMessage(msg);
     } else if (
+      eventType === 'session.next.reasoning.started' ||
+      eventType === 'session.reasoning.started'
+    ) {
+      ensureStarted();
+      rt.status = 'thinking';
+    } else if (
+      eventType === 'session.next.tool.started' ||
+      eventType === 'session.tool.started'
+    ) {
+      ensureStarted();
+      rt.status = 'tool_executing';
+    } else if (
       eventType === 'session.next.text.started' ||
       eventType === 'session.next.step.started' ||
       eventType === 'session.step.started' ||
-      eventType === 'session.next.reasoning.started' ||
-      eventType === 'session.next.tool.started' ||
       (eventType === 'session.status' && props.status?.type === 'busy')
     ) {
       ensureStarted();
@@ -331,6 +341,7 @@ export class RemoteAgent {
       });
       this.sendMessage(msg);
     } else if (eventType === 'permission.asked' || eventType === 'permission.v2.asked') {
+      rt.status = 'waiting_permission';
       const permItem: PermissionItem = {
         id: props.id || props.requestID || props.requestId || `perm_${Date.now()}`,
         title: props.title,
@@ -350,7 +361,11 @@ export class RemoteAgent {
       if (permId) {
         this.pendingPermissions.delete(permId);
       }
+      if (this.pendingPermissions.size === 0 && this.pendingQuestions.size === 0 && rt.status === 'waiting_permission') {
+        rt.status = 'busy';
+      }
     } else if (eventType === 'question.asked') {
+      rt.status = 'waiting_question';
       const qItem: QuestionItem = {
         id: props.id || props.requestID || props.requestId || `q_${Date.now()}`,
         sessionID: sessionId,
@@ -362,6 +377,9 @@ export class RemoteAgent {
       const qId = props.id || props.requestID || props.requestId;
       if (qId) {
         this.pendingQuestions.delete(qId);
+      }
+      if (this.pendingPermissions.size === 0 && this.pendingQuestions.size === 0 && rt.status === 'waiting_question') {
+        rt.status = 'busy';
       }
     } else if (eventType === 'session.deleted') {
       this.cleanupSessionRuntime(sessionId);
@@ -776,7 +794,7 @@ export class RemoteAgent {
 
         case 'MESSAGE_SEND': {
           try {
-            const { sessionId, content, model } = msg.payload;
+            const { sessionId, content, model, clientMessageId } = msg.payload;
             const messageId = await this.adapter.sendMessage(sessionId, content, model);
 
             // Mark turn active
@@ -796,6 +814,7 @@ export class RemoteAgent {
                 deviceId: this.config.deviceId,
                 sessionId,
                 messageId,
+                clientMessageId,
                 timestamp: Date.now(),
                 sequence: seq,
                 agentInstanceId: this.agentInstanceId,
@@ -810,6 +829,7 @@ export class RemoteAgent {
                 deviceId: this.config.deviceId,
                 sessionId,
                 messageId,
+                clientMessageId,
                 status: 'accepted',
               },
               msg.id
