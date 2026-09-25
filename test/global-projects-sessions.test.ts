@@ -210,6 +210,42 @@ describe('Global PC-Wide Projects and Sessions E2E', () => {
               )
             )
           );
+        } else if (msg.type === 'SESSION_GET') {
+          const matched = mockSessions.find((s) => s.id === msg.payload.sessionId);
+          agentWs.send(
+            JSON.stringify(
+              createMessage(
+                'SESSION_GET_RESULT',
+                {
+                  deviceId: TEST_DEVICE_ID,
+                  requestId: msg.id,
+                  session: matched || {
+                    id: msg.payload.sessionId,
+                    title: 'External Session',
+                    createdAt: Date.now(),
+                    directory: msg.payload.directory,
+                  },
+                  messages: [
+                    {
+                      id: 'msg_ext_1',
+                      sessionId: msg.payload.sessionId,
+                      role: 'user',
+                      content: 'Hello external project',
+                      createdAt: Date.now() - 5000,
+                    },
+                    {
+                      id: 'msg_ext_2',
+                      sessionId: msg.payload.sessionId,
+                      role: 'assistant',
+                      content: 'External project chat loaded successfully!',
+                      createdAt: Date.now() - 1000,
+                    },
+                  ],
+                },
+                msg.id
+              )
+            )
+          );
         }
       } catch {}
     });
@@ -345,5 +381,27 @@ describe('Global PC-Wide Projects and Sessions E2E', () => {
     expect(res.payload.session.directory).toBe('D:/Projects/web/Anilili');
     expect(res.payload.session.projectId).toBe('proj_anilili');
     expect(res.payload.session.title).toBe('New Anilili feature');
+  });
+
+  it('5. Loads external project session (e.g. MyDonghuaList / Dailio) via SESSION_GET with correct directory and messages', async () => {
+    const req = createMessage('SESSION_GET', {
+      deviceId: TEST_DEVICE_ID,
+      deviceToken: clientToken,
+      sessionId: 'ses_donghua_1',
+      directory: 'D:/Projects/web/MyDonghuaList',
+    });
+    clientWs.send(JSON.stringify(req));
+
+    const res = await waitForMessage<any>(
+      clientWs,
+      (m) => m.type === 'SESSION_GET_RESULT' && m.payload.deviceId === TEST_DEVICE_ID,
+      'session-get-res'
+    );
+
+    expect(res.payload.session.id).toBe('ses_donghua_1');
+    expect(res.payload.session.directory).toBe('D:/Projects/web/MyDonghuaList');
+    expect(res.payload.requestId).toBe(req.id);
+    expect(res.payload.messages).toHaveLength(2);
+    expect(res.payload.messages[1].content).toBe('External project chat loaded successfully!');
   });
 });

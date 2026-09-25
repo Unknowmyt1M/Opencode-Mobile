@@ -117,23 +117,29 @@ export default function App() {
 
   const activeSessionRef = React.useRef(activeSession);
   activeSessionRef.current = activeSession;
+  const initialRestoreAttemptedRef = React.useRef<Record<string, boolean>>({});
 
-  // Auto-fetch data on device connection & auto-mirror active/latest session
+  // Auto-fetch data on device connection & auto-mirror active/latest session (once per device connection)
   useEffect(() => {
     if (selectedDevice?.paired && selectedDevice?.opencodeStatus === 'connected') {
-      fetchProjects(selectedDevice.deviceId);
-      fetchSessions(selectedDevice.deviceId).then((loadedSessions) => {
-        if (!activeSessionRef.current && loadedSessions && loadedSessions.length > 0) {
-          let savedLastSessionId: string | null = null;
-          try {
-            savedLastSessionId = localStorage.getItem(`opencode_last_session_${selectedDevice.deviceId}`);
-          } catch {}
-          const busySession = loadedSessions.find((s) => sessionStatuses[s.id] === 'busy');
-          const targetSession =
-            (savedLastSessionId ? loadedSessions.find((s) => s.id === savedLastSessionId) : null) ||
-            busySession;
-          if (targetSession) {
-            openSession(selectedDevice.deviceId, targetSession.id, targetSession.directory);
+      const devId = selectedDevice.deviceId;
+      fetchProjects(devId);
+      fetchSessions(devId).then((loadedSessions) => {
+        // Only attempt auto-restore once per device connection, and only if user hasn't already opened/loading a session
+        if (!initialRestoreAttemptedRef.current[devId]) {
+          initialRestoreAttemptedRef.current[devId] = true;
+          if (!activeSessionRef.current && !loadingSessionId && loadedSessions && loadedSessions.length > 0) {
+            let savedLastSessionId: string | null = null;
+            try {
+              savedLastSessionId = localStorage.getItem(`opencode_last_session_${devId}`);
+            } catch {}
+            const busySession = loadedSessions.find((s) => sessionStatuses[s.id] === 'busy');
+            const targetSession =
+              (savedLastSessionId ? loadedSessions.find((s) => s.id === savedLastSessionId) : null) ||
+              busySession;
+            if (targetSession) {
+              openSession(devId, targetSession.id, targetSession.directory);
+            }
           }
         }
       });
@@ -151,7 +157,6 @@ export default function App() {
     fetchPtys,
     fetchPermissions,
     openSession,
-    sessionStatuses,
   ]);
 
   return (

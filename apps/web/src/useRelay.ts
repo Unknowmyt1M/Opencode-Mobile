@@ -458,8 +458,15 @@ export function useRelay(relayWsUrl?: string) {
         try {
           const msg: ProtocolMessage = parseProtocolMessage(event.data);
 
-          // Check if pending RPC request matches
-          if (pendingRequests.current.has(msg.id)) {
+          // Check if pending RPC request matches (by payload.requestId or message.id)
+          const targetReqId = (msg.payload && typeof (msg.payload as any).requestId === 'string')
+            ? (msg.payload as any).requestId
+            : msg.id;
+          if (pendingRequests.current.has(targetReqId)) {
+            const resolver = pendingRequests.current.get(targetReqId);
+            pendingRequests.current.delete(targetReqId);
+            if (resolver) resolver(msg.payload);
+          } else if (targetReqId !== msg.id && pendingRequests.current.has(msg.id)) {
             const resolver = pendingRequests.current.get(msg.id);
             pendingRequests.current.delete(msg.id);
             if (resolver) resolver(msg.payload);

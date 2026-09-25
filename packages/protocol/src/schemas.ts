@@ -573,6 +573,7 @@ export const SessionGetResultMessageSchema = z.object({
   timestamp: z.number().int().positive(),
   payload: z.object({
     deviceId: z.string().min(1).max(128),
+    requestId: z.string().optional(),
     session: OpenCodeSessionSchema,
     messages: z.array(SessionMessageSchema),
     isStreaming: z.boolean().optional(),

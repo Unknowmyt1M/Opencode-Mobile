@@ -853,6 +853,7 @@ export class RemoteAgent {
               'SESSION_GET_RESULT',
               {
                 deviceId: this.config.deviceId,
+                requestId: msg.id,
                 session,
                 messages,
                 isStreaming,

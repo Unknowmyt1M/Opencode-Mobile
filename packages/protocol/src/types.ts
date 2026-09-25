@@ -399,6 +399,7 @@ export interface SessionGetPayload {
 
 export interface SessionGetResultPayload {
   deviceId: string;
+  requestId?: string;
   session: OpenCodeSession;
   messages: SessionMessage[];
   isStreaming?: boolean;
