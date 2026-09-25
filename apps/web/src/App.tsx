@@ -18,12 +18,11 @@ import { Dashboard } from './components/Dashboard';
 import { ConversationView } from './components/ConversationView';
 import { ReviewView } from './components/ReviewView';
 import { XtermTerminal } from './components/XtermTerminal';
-import { AgentWorkTimeline } from './components/AgentWorkTimeline';
+import { AgentActivityTimeline } from './components/AgentActivityTimeline';
 import { SessionLoadingSkeleton } from './components/SessionLoadingSkeleton';
 import { SessionTelemetryModal } from './components/SessionTelemetryModal';
 import { FileTreeExplorer } from './components/FileTreeExplorer';
 import { ProjectSessionTree } from './components/ProjectSessionTree';
-import { normalizeConversationTurns, type TurnGroup } from './utils/activityNormalizer';
 
 export default function App() {
   const {
@@ -351,6 +350,18 @@ export default function App() {
                   enqueueMessage(activeSession.session.id, text);
                 }
               }}
+              allSessions={sessions}
+              sessionStatuses={sessionStatuses}
+              onSelectSubagent={(subId, subDir) => {
+                if (selectedDevice) {
+                  openSession(selectedDevice.deviceId, subId, subDir);
+                }
+              }}
+              onBackToParent={() => {
+                if (selectedDevice && activeSession?.session.parentID) {
+                  openSession(selectedDevice.deviceId, activeSession.session.parentID);
+                }
+              }}
               hideTabs={true}
             />
           ) : selectedDevice && !selectedDevice.paired ? (
@@ -512,18 +523,28 @@ export default function App() {
               )}
 
               {rightPanelTab === 'activity' && (
-                <div className="p-4 space-y-4 overflow-y-auto h-full">
-                  {activeSession ? (
-                    normalizeConversationTurns(activeSession.messages)
-                      .filter((t: TurnGroup) => t.agentRun.hasActiveWork)
-                      .map((t: TurnGroup) => (
-                        <div key={t.id} className="p-3 bg-slate-900/50 rounded-xl border border-slate-800/80">
-                          <AgentWorkTimeline turn={t} defaultExpanded={true} onSelectDiffFile={setActiveDiffFile} />
-                        </div>
-                      ))
-                  ) : (
-                    <div className="p-8 text-center text-slate-500 text-xs">No active timeline</div>
-                  )}
+                <div className="h-full overflow-hidden">
+                  <AgentActivityTimeline
+                    sessionId={activeSession?.session.id}
+                    messages={activeSession?.messages || []}
+                    allSessions={sessions}
+                    diffs={sessionDiffs}
+                    ptys={ptys}
+                    sessionStatuses={sessionStatuses}
+                    onSelectSubagent={(subId, subDir) => {
+                      if (selectedDevice) {
+                        openSession(selectedDevice.deviceId, subId, subDir);
+                      }
+                    }}
+                    onSelectDiffFile={(file) => {
+                      setActiveDiffFile(file);
+                      setRightPanelTab('review');
+                    }}
+                    onSelectPty={(ptyId) => {
+                      setActivePtyId(ptyId);
+                      setRightPanelTab('terminal');
+                    }}
+                  />
                 </div>
               )}
             </div>
@@ -620,6 +641,18 @@ export default function App() {
             onQueueMessage={(text) => {
               if (activeSession) {
                 enqueueMessage(activeSession.session.id, text);
+              }
+            }}
+            allSessions={sessions}
+            sessionStatuses={sessionStatuses}
+            onSelectSubagent={(subId, subDir) => {
+              if (selectedDevice) {
+                openSession(selectedDevice.deviceId, subId, subDir);
+              }
+            }}
+            onBackToParent={() => {
+              if (selectedDevice && activeSession?.session.parentID) {
+                openSession(selectedDevice.deviceId, activeSession.session.parentID);
               }
             }}
             hideTabs={false}

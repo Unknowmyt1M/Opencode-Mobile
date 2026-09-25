@@ -9,6 +9,7 @@ import {
   ChevronDown,
   Folder,
   PanelRight,
+  Shield,
 } from 'lucide-react';
 import type {
   OpenCodeSession,
@@ -27,6 +28,7 @@ import { type WorkspaceTab } from '../useRelay';
 import { ReviewView } from './ReviewView';
 import { XtermTerminal } from './XtermTerminal';
 import { AgentWorkTimeline } from './AgentWorkTimeline';
+import { AgentActivityTimeline } from './AgentActivityTimeline';
 import { MarkdownView } from './MarkdownView';
 import { normalizeConversationTurns, type TurnElement, type ActivityItem, type TurnGroup } from '../utils/activityNormalizer';
 import { Composer } from './Composer';
@@ -317,6 +319,10 @@ interface ConversationViewProps {
   onQueueMessage?: (text: string) => void;
   showRightPanel?: boolean;
   onToggleRightPanel?: () => void;
+  allSessions?: OpenCodeSession[];
+  sessionStatuses?: Record<string, string>;
+  onSelectSubagent?: (subagentId: string, directory?: string) => void;
+  onBackToParent?: () => void;
 }
 
 export const ConversationView: React.FC<ConversationViewProps> = ({
@@ -374,7 +380,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   onQueueMessage,
   showRightPanel = true,
   onToggleRightPanel,
+  allSessions = [],
+  sessionStatuses = {},
+  onSelectSubagent,
+  onBackToParent,
 }) => {
+  const isSubagent = Boolean(session.parentID) || Boolean(session.title && /(@[\w-]+\s+subagent|\bsubagent\b)/i.test(session.title));
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [composerMentions, setComposerMentions] = useState<ContextMention[]>([]);
   const [showMentionModal, setShowMentionModal] = useState(false);
@@ -468,9 +479,17 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
               <ArrowLeft className="w-4 h-4" />
             </button>
             <div className="min-w-0">
-              <h2 className="font-semibold text-xs text-white truncate max-w-[200px] sm:max-w-md">
-                {session.title || 'Untitled Session'}
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2 className="font-semibold text-xs text-white truncate max-w-[200px] sm:max-w-md">
+                  {session.title || 'Untitled Session'}
+                </h2>
+                {isSubagent && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-950/80 border border-indigo-500/30 text-[10px] font-mono text-indigo-300 shrink-0">
+                    <Shield className="w-3 h-3 text-indigo-400" />
+                    <span>Subagent • Read only</span>
+                  </span>
+                )}
+              </div>
               <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">
                 <span>{session.id.slice(0, 10)}...</span>
                 {projectContext?.name && (
@@ -661,12 +680,24 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
 
         {/* Timeline / Activity Tab */}
         {!hideTabs && activeTab === 'activity' && (
-          <div className="p-4 max-w-3xl mx-auto space-y-4">
-            {conversationTurns.filter((t) => t.agentRun.hasActiveWork).map((t) => (
-              <div key={t.id} className="p-3 bg-slate-900/50 rounded-xl border border-slate-800/80">
-                <AgentWorkTimeline turn={t} defaultExpanded={true} onSelectDiffFile={onSelectDiffFile} />
-              </div>
-            ))}
+          <div className="h-full overflow-hidden">
+            <AgentActivityTimeline
+              sessionId={session.id}
+              messages={messages}
+              allSessions={allSessions}
+              diffs={diffs}
+              ptys={ptys}
+              sessionStatuses={sessionStatuses}
+              onSelectSubagent={onSelectSubagent}
+              onSelectDiffFile={(file) => {
+                onSelectDiffFile(file);
+                onSelectTab('review');
+              }}
+              onSelectPty={(ptyId) => {
+                onSelectPty?.(ptyId);
+                onSelectTab('terminal');
+              }}
+            />
           </div>
         )}
 
@@ -685,60 +716,89 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
 
       {/* Composer Input Bar, Todo Widget & Queued Messages */}
       {(activeTab === 'chat' || hideTabs) && (
-        <div className="w-full shrink-0 flex flex-col bg-slate-900/95 border-t border-slate-800/90 backdrop-blur-md relative z-30 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-          <div className="max-w-3xl mx-auto w-full">
-            {/* Todo Widget */}
-            {todos && todos.length > 0 && (
-              <div className="px-3 sm:px-4 w-full mb-2">
-                <TodoWidget todos={todos} />
+        isSubagent ? (
+          <div className="w-full shrink-0 p-3 sm:p-4 bg-slate-900/95 border-t border-slate-800/90 backdrop-blur-md relative z-30 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+            <div className="max-w-3xl mx-auto w-full p-3.5 bg-slate-950/80 rounded-2xl border border-slate-800/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2.5 text-slate-300">
+                <div className="w-8 h-8 rounded-xl bg-indigo-950/80 border border-indigo-500/30 flex items-center justify-center shrink-0">
+                  <Shield className="w-4 h-4 text-indigo-400" />
+                </div>
+                <div>
+                  <span className="font-semibold text-white">Subagent • Read only</span>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    This subagent was spawned by the main workspace agent. Direct user messaging and prompt submission are disabled.
+                  </p>
+                </div>
               </div>
-            )}
-
-            {/* Queued Messages Card */}
-            {queuedMessages && queuedMessages.length > 0 && (
-              <div className="px-3 sm:px-4 w-full mb-2">
-                <QueuedMessages
-                  queue={queuedMessages}
-                  isStreaming={isStreaming}
-                  onSendNow={(id) => onSendQueuedMessageNow?.(id)}
-                  onEdit={(item) => onEditQueuedMessage?.(item)}
-                  onDelete={(id) => onDeleteQueuedMessage?.(id)}
-                  onRetry={(id) => onRetryQueuedMessage?.(id)}
-                />
-              </div>
-            )}
-
-            <Composer
-              onSendMessage={onSendMessage}
-              isStreaming={isStreaming}
-              onAbort={() => onAbort?.()}
-              models={models}
-              selectedModel={selectedModel}
-              onSelectModel={(m) => onSelectModel?.(m)}
-              permissions={permissions}
-              onReplyPermission={onReplyPermission}
-              editingItem={editingQueueItem}
-              onSaveEdit={onSaveQueuedMessageEdit}
-              onCancelEdit={onCancelQueuedMessageEdit}
-              telemetry={telemetry}
-              onOpenTelemetry={onOpenTelemetry}
-              onUndo={async () => {
-                setShowSafeRevertModal(true);
-                return { success: true };
-              }}
-              onCompact={onCompact}
-              onFork={onFork}
-              onSelectTab={onSelectTab}
-              onClearSession={onClearSession}
-              mode={mode}
-              onModeChange={onModeChange}
-              mentions={composerMentions}
-              onRemoveMention={(idx) => setComposerMentions((prev) => prev.filter((_, i) => i !== idx))}
-              onOpenMentionModal={() => setShowMentionModal(true)}
-              onQueueMessage={onQueueMessage}
-            />
+              {onBackToParent && (
+                <button
+                  type="button"
+                  onClick={onBackToParent}
+                  className="px-3.5 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 hover:text-white font-medium transition-colors shrink-0 text-xs cursor-pointer flex items-center gap-1.5"
+                  title="Return to the parent session"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  <span>Back to Main Session</span>
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="w-full shrink-0 flex flex-col bg-slate-900/95 border-t border-slate-800/90 backdrop-blur-md relative z-30 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+            <div className="max-w-3xl mx-auto w-full">
+              {/* Todo Widget */}
+              {todos && todos.length > 0 && (
+                <div className="px-3 sm:px-4 w-full mb-2">
+                  <TodoWidget todos={todos} />
+                </div>
+              )}
+
+              {/* Queued Messages Card */}
+              {queuedMessages && queuedMessages.length > 0 && (
+                <div className="px-3 sm:px-4 w-full mb-2">
+                  <QueuedMessages
+                    queue={queuedMessages}
+                    isStreaming={isStreaming}
+                    onSendNow={(id) => onSendQueuedMessageNow?.(id)}
+                    onEdit={(item) => onEditQueuedMessage?.(item)}
+                    onDelete={(id) => onDeleteQueuedMessage?.(id)}
+                    onRetry={(id) => onRetryQueuedMessage?.(id)}
+                  />
+                </div>
+              )}
+
+              <Composer
+                onSendMessage={onSendMessage}
+                isStreaming={isStreaming}
+                onAbort={() => onAbort?.()}
+                models={models}
+                selectedModel={selectedModel}
+                onSelectModel={(m) => onSelectModel?.(m)}
+                permissions={permissions}
+                onReplyPermission={onReplyPermission}
+                editingItem={editingQueueItem}
+                onSaveEdit={onSaveQueuedMessageEdit}
+                onCancelEdit={onCancelQueuedMessageEdit}
+                telemetry={telemetry}
+                onOpenTelemetry={onOpenTelemetry}
+                onUndo={async () => {
+                  setShowSafeRevertModal(true);
+                  return { success: true };
+                }}
+                onCompact={onCompact}
+                onFork={onFork}
+                onSelectTab={onSelectTab}
+                onClearSession={onClearSession}
+                mode={mode}
+                onModeChange={onModeChange}
+                mentions={composerMentions}
+                onRemoveMention={(idx) => setComposerMentions((prev) => prev.filter((_, i) => i !== idx))}
+                onOpenMentionModal={() => setShowMentionModal(true)}
+                onQueueMessage={onQueueMessage}
+              />
+            </div>
+          </div>
+        )
       )}
 
       {/* Context Mention Modal */}

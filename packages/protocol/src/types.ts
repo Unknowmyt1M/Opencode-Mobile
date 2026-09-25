@@ -77,6 +77,9 @@ export interface MessagePart {
   files?: string[];
   reason?: string;
   synthetic?: boolean;
+  filename?: string;
+  url?: string;
+  size?: number;
   [key: string]: unknown;
 }
 

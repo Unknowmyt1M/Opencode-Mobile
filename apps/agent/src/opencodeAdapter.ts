@@ -303,6 +303,9 @@ export class OpenCodeAdapter {
             hash: p.hash,
             files: p.files,
             reason: p.reason,
+            filename: p.filename,
+            url: p.url,
+            size: p.size,
           })),
         });
       }
