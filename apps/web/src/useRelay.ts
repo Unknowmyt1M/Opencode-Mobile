@@ -1454,7 +1454,7 @@ export function useRelay(relayWsUrl?: string) {
       const msg = createMessage('SESSION_LIST_GLOBAL', {
         deviceId,
         deviceToken: token,
-        limit,
+        limit: limit || 2000,
       });
       try {
         const res = await sendRpc<SessionListGlobalResultPayload>(msg);

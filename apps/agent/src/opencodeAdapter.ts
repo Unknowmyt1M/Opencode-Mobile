@@ -81,7 +81,12 @@ export class OpenCodeAdapter {
     const data = (await res.json()) as any[];
     return (data || []).map((p) => {
       const parts = (p.worktree || '').split(/[\\/]/).filter(Boolean);
-      const inferredName = parts.length > 0 ? parts[parts.length - 1] : undefined;
+      const inferredName =
+        p.id === 'global' || p.worktree === '/'
+          ? 'Global Sessions'
+          : parts.length > 0
+          ? parts[parts.length - 1]
+          : undefined;
       return {
         id: p.id,
         worktree: p.worktree,
@@ -94,9 +99,10 @@ export class OpenCodeAdapter {
     });
   }
 
-  async listGlobalSessions(limit = 100): Promise<OpenCodeSession[]> {
+  async listGlobalSessions(limit = 2000): Promise<OpenCodeSession[]> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/session?limit=${limit}`, {
+      const targetLimit = limit || 2000;
+      const res = await fetch(`${this.baseUrl}/api/session?limit=${targetLimit}`, {
         headers: this.getHeaders(),
       });
       if (res.ok) {
@@ -108,7 +114,7 @@ export class OpenCodeAdapter {
           createdAt: s.time?.created || Date.now(),
           updatedAt: s.time?.updated,
           projectId: s.projectID || s.projectId,
-          directory: s.location?.directory,
+          directory: s.location?.directory || s.directory,
           parentID: s.parentID,
         }));
       }

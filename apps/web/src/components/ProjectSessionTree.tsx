@@ -59,6 +59,14 @@ export function ProjectSessionTree({
 }: ProjectSessionTreeProps) {
   // Map projects to their sessions
   const { projectGroups, unassignedSessions } = useMemo(() => {
+    // Separate specific projects from the synthetic global project
+    const specificProjects = projects.filter(
+      (p) => p.id !== 'global' && p.worktree !== '/'
+    );
+    const globalProject = projects.find(
+      (p) => p.id === 'global' || p.worktree === '/'
+    );
+
     const map = new Map<string, OpenCodeSession[]>();
     for (const proj of projects) {
       map.set(proj.id, []);
@@ -72,14 +80,39 @@ export function ProjectSessionTree({
         continue;
       }
 
+      const sDir = normalizePath(sess.directory);
+      const sProjId = sess.projectId;
       let matched = false;
-      for (const proj of projects) {
-        if (isSessionInProject(sess, proj)) {
-          map.get(proj.id)!.push(sess);
-          matched = true;
-          break;
+
+      // 1. Directory-first match against specific projects (e.g. D:\Projects\Anilili)
+      if (sDir) {
+        for (const proj of specificProjects) {
+          const pDir = normalizePath(proj.worktree);
+          if (pDir && (sDir === pDir || sDir.startsWith(pDir + '/'))) {
+            map.get(proj.id)!.push(sess);
+            matched = true;
+            break;
+          }
         }
       }
+
+      // 2. Exact projectId match against specific projects (ignoring 'global')
+      if (!matched && sProjId && sProjId !== 'global') {
+        for (const proj of specificProjects) {
+          if (proj.id === sProjId) {
+            map.get(proj.id)!.push(sess);
+            matched = true;
+            break;
+          }
+        }
+      }
+
+      // 3. Fallback to synthetic global project (if exists)
+      if (!matched && globalProject) {
+        map.get(globalProject.id)!.push(sess);
+        matched = true;
+      }
+
       if (!matched) {
         unassigned.push(sess);
       }
@@ -91,13 +124,34 @@ export function ProjectSessionTree({
     }
     unassigned.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
 
-    // Sort projects: projects with sessions first, then by name
+    // Helper to get latest session timestamp in project
+    const getLatestTimestamp = (pId: string) => {
+      const list = map.get(pId) || [];
+      return list.length > 0 ? (list[0].updatedAt || list[0].createdAt || 0) : 0;
+    };
+
+    // Sort projects:
+    // 1. Specific projects with sessions (sorted by latest activity)
+    // 2. Global project (if has sessions)
+    // 3. Projects without sessions (alphabetical)
     const sortedProjects = [...projects].sort((a, b) => {
       const aCount = map.get(a.id)?.length || 0;
       const bCount = map.get(b.id)?.length || 0;
+      const aIsGlobal = a.id === 'global' || a.worktree === '/';
+      const bIsGlobal = b.id === 'global' || b.worktree === '/';
+
       if (aCount > 0 && bCount === 0) return -1;
       if (aCount === 0 && bCount > 0) return 1;
-      return (a.name || '').localeCompare(b.name || '');
+
+      if (aCount > 0 && bCount > 0) {
+        if (aIsGlobal && !bIsGlobal) return 1;
+        if (!aIsGlobal && bIsGlobal) return -1;
+        return getLatestTimestamp(b.id) - getLatestTimestamp(a.id);
+      }
+
+      const aName = a.name || a.worktree || '';
+      const bName = b.name || b.worktree || '';
+      return aName.localeCompare(bName);
     });
 
     return {
@@ -241,7 +295,11 @@ export function ProjectSessionTree({
                       )}
                     </span>
                     <span className="truncate font-medium text-xs">
-                      {project.name || 'Workspace'}
+                      {project.id === 'global' || project.worktree === '/'
+                        ? project.name || 'Global Sessions'
+                        : project.name ||
+                          project.worktree?.split(/[\\/]/).filter(Boolean).pop() ||
+                          'Project'}
                     </span>
                   </div>
 
@@ -258,8 +316,14 @@ export function ProjectSessionTree({
                         e.stopPropagation();
                         onCreateSession('New Session', project.worktree, project.id);
                       }}
-                      className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-opacity"
-                      title={`Create session in ${project.name}`}
+                      className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-opacity cursor-pointer"
+                      title={`Create session in ${
+                        project.id === 'global' || project.worktree === '/'
+                          ? 'Global Sessions'
+                          : project.name ||
+                            project.worktree?.split(/[\\/]/).filter(Boolean).pop() ||
+                            'Project'
+                      }`}
                     >
                       <Plus className="w-3 h-3" />
                     </button>
