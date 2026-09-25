@@ -66,6 +66,12 @@ export function ProjectSessionTree({
     const unassigned: OpenCodeSession[] = [];
 
     for (const sess of sessions) {
+      // Filter out subagents so they don't pollute the sidebar project/session tree.
+      // Subagents are displayed in the rich Timeline tab instead.
+      if (sess.parentID || (sess.title && /(@[\w-]+\s+subagent|\bsubagent\b)/i.test(sess.title))) {
+        continue;
+      }
+
       let matched = false;
       for (const proj of projects) {
         if (isSessionInProject(sess, proj)) {
