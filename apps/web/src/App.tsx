@@ -657,7 +657,11 @@ export default function App() {
             }}
             onBackToParent={() => {
               if (selectedDevice && activeSession?.session.parentID) {
-                openSession(selectedDevice.deviceId, activeSession.session.parentID);
+                openSession(
+                  selectedDevice.deviceId,
+                  activeSession.session.parentID,
+                  activeSession.session.directory
+                );
               }
             }}
             hideTabs={false}

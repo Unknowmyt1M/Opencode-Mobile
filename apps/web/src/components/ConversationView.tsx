@@ -472,9 +472,9 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
           <div className="flex items-center gap-2.5 min-w-0">
             <button
               type="button"
-              onClick={onClose}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
-              title="Return to sessions"
+              onClick={session.parentID && onBackToParent ? onBackToParent : onClose}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
+              title={session.parentID ? 'Back to parent session' : 'Return to sessions'}
             >
               <ArrowLeft className="w-4 h-4" />
             </button>
@@ -484,10 +484,23 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
                   {session.title || 'Untitled Session'}
                 </h2>
                 {isSubagent && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-950/80 border border-indigo-500/30 text-[10px] font-mono text-indigo-300 shrink-0">
-                    <Shield className="w-3 h-3 text-indigo-400" />
-                    <span>Subagent • Read only</span>
-                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-950/80 border border-indigo-500/30 text-[10px] font-mono text-indigo-300 shrink-0">
+                      <Shield className="w-3 h-3 text-indigo-400" />
+                      <span>Subagent • Read only</span>
+                    </span>
+                    {session.parentID && onBackToParent && (
+                      <button
+                        type="button"
+                        onClick={onBackToParent}
+                        className="px-2 py-0.5 rounded-md bg-indigo-600/30 hover:bg-indigo-600/50 border border-indigo-500/40 text-[10px] font-medium text-indigo-200 hover:text-white transition-colors cursor-pointer flex items-center gap-1"
+                        title="Return to parent session"
+                      >
+                        <ArrowLeft className="w-3 h-3" />
+                        <span>Parent</span>
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
               <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">

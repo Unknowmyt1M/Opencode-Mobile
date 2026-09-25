@@ -40,7 +40,11 @@ export function buildRelayServer(options: RelayOptions = {}): {
     origin: options.corsOrigin ?? true,
   });
 
-  app.register(websocket);
+  app.register(websocket, {
+    options: {
+      maxPayload: 52428800, // 50MB
+    },
+  });
 
   app.get('/health', async () => ({
     status: store.isPersistenceHealthy() ? 'ok' : 'degraded',
@@ -503,6 +507,7 @@ export function buildRelayServer(options: RelayOptions = {}): {
 
             case 'SESSION_GET': {
               const { deviceId, deviceToken } = message.payload;
+              console.log('[relay] Received SESSION_GET:', message.id, message.payload.sessionId, 'dir:', message.payload.directory, 'tokenValid:', store.verifyDeviceToken(deviceId, deviceToken));
               if (!store.verifyDeviceToken(deviceId, deviceToken)) {
                 socket.send(
                   JSON.stringify(
@@ -539,6 +544,7 @@ export function buildRelayServer(options: RelayOptions = {}): {
 
             case 'SESSION_GET_RESULT': {
               const clientSocket = requestToClient.get(message.id);
+              console.log('[relay] Handling SESSION_GET_RESULT:', message.id, 'clientSocketFound:', Boolean(clientSocket));
               if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
                 clientSocket.send(JSON.stringify(message));
                 requestToClient.delete(message.id);
@@ -1097,6 +1103,7 @@ export function buildRelayServer(options: RelayOptions = {}): {
               break;
           }
         } catch (err: any) {
+          console.error('[relay] Error parsing message from socket:', err);
           try {
             socket.send(
               JSON.stringify(

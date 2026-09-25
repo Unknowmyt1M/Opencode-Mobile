@@ -82,9 +82,9 @@ describe('Protocol Message Validation', () => {
     expect(() => parseProtocolMessage(invalidMsg)).toThrow();
   });
 
-  it('rejects oversized payload (>1MB)', () => {
-    const hugeString = 'A'.repeat(1100000);
-    expect(() => parseProtocolMessage(hugeString)).toThrow('Message payload exceeds maximum limit of 1MB');
+  it('rejects oversized payload (>50MB)', () => {
+    const hugeString = 'A'.repeat(53000000);
+    expect(() => parseProtocolMessage(hugeString)).toThrow('Message payload exceeds maximum limit of 50MB');
   });
 
   it('handles PING and PONG envelopes correctly', () => {

@@ -60,7 +60,9 @@ export const ToolStateSchema = z.object({
   input: z.unknown().optional(),
   output: z.unknown().optional(),
   error: z.string().optional(),
-});
+  metadata: z.record(z.unknown()).optional(),
+  time: z.record(z.unknown()).optional(),
+}).passthrough();
 
 export const MessagePartSchema = z.object({
   id: z.string().optional(),
@@ -1471,11 +1473,13 @@ export const MessageSchema = z.discriminatedUnion('type', [
 
 export type ProtocolMessage = z.infer<typeof MessageSchema>;
 
+export const MAX_PROTOCOL_PAYLOAD_BYTES = 52428800; // 50MB max limit for large sessions, multi-file diffs and terminal buffers
+
 export function parseProtocolMessage(raw: unknown): ProtocolMessage {
   let parsedJson = raw;
   if (typeof raw === 'string') {
-    if (raw.length > 1048576) { // 1MB max limit for diffs and terminal buffers
-      throw new Error('Message payload exceeds maximum limit of 1MB');
+    if (raw.length > MAX_PROTOCOL_PAYLOAD_BYTES) {
+      throw new Error(`Message payload exceeds maximum limit of 50MB (received ${(raw.length / 1024 / 1024).toFixed(2)}MB)`);
     }
     parsedJson = JSON.parse(raw);
   }

@@ -145,9 +145,13 @@ export function selectSubagents(
         const state = (part.state || {}) as any;
         const input = (state.input || {}) as any;
         const meta = (state.metadata || {}) as any;
-        const subId = meta.sessionId || meta.subagentSessionId || state.sessionId || part.id || `sub_${Date.now()}`;
+        const outputSessionId = typeof state.output === 'string' ? state.output.match(/<task\s+id="([^"]+)"/)?.[1] : undefined;
+        const subId = meta.sessionId || meta.subagentSessionId || state.sessionId || outputSessionId;
+        if (!subId || !subId.startsWith('ses_')) continue;
+
         const subagentType = input.subagent_type || meta.model?.id || meta.subagentType;
         const taskTitle = input.description || meta.title || input.prompt || 'Subagent Task';
+        const subDir = meta.directory || (allSessions.find((s) => s.id === subId)?.directory);
 
         const rawStatus = state.status || (sessionStatuses[subId] === 'busy' ? 'running' : 'completed');
         const status: TimelineSubagent['status'] =
@@ -177,6 +181,7 @@ export function selectSubagents(
             existing.duration = durationStr;
           }
           if (subagentType) existing.subagentType = subagentType;
+          if (subDir && !existing.directory) existing.directory = subDir;
         } else {
           subagentsMap.set(subId, {
             id: subId,
@@ -185,6 +190,7 @@ export function selectSubagents(
             status,
             duration: durationStr,
             durationSeconds: durSec,
+            directory: subDir,
             createdAt: startTime,
           });
         }

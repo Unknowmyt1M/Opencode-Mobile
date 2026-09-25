@@ -61,6 +61,9 @@ export interface ToolState {
   input?: unknown;
   output?: unknown;
   error?: string;
+  metadata?: Record<string, unknown>;
+  time?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 export interface MessagePart {

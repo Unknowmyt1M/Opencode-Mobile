@@ -818,6 +818,7 @@ export class RemoteAgent {
         }
 
         case 'SESSION_GET': {
+          console.log('[agent] Handling SESSION_GET:', msg.id, msg.payload.sessionId, 'dir:', msg.payload.directory);
           try {
             const dir = msg.payload.directory || this.sessionDirectories.get(msg.payload.sessionId);
             const { session, messages } = await this.adapter.getSession(msg.payload.sessionId, dir);
@@ -880,13 +881,19 @@ export class RemoteAgent {
               msg.id
             );
             this.sendMessage(res);
+            console.log('[agent] SESSION_GET_RESULT sent successfully for:', msg.payload.sessionId, 'msgId:', res.id);
           } catch (err: any) {
+            console.error('[agent] SESSION_GET failed with error:', err);
             this.sendMessage(
-              createMessage('ERROR', {
-                code: 'SESSION_NOT_FOUND',
-                message: err.message,
-                requestId: msg.id,
-              })
+              createMessage(
+                'ERROR',
+                {
+                  code: 'SESSION_NOT_FOUND',
+                  message: err.message,
+                  requestId: msg.id,
+                },
+                msg.id
+              )
             );
           }
           break;
