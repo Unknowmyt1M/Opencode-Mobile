@@ -26,11 +26,13 @@ function normalizePath(p?: string): string {
 }
 
 function isSessionInProject(session: OpenCodeSession, project: OpenCodeProject): boolean {
-  if (session.projectId && project.id && session.projectId === project.id) return true;
-  if (!session.directory || !project.worktree) return false;
+  if (!session.directory || !project.worktree) {
+    return Boolean(session.projectId && project.id && session.projectId === project.id && project.id !== 'global');
+  }
   const sDir = normalizePath(session.directory);
   const pDir = normalizePath(project.worktree);
-  return sDir === pDir || sDir.startsWith(pDir + '/');
+  const isSandbox = (project.sandboxes || []).some((sb) => normalizePath(sb) === sDir);
+  return sDir === pDir || isSandbox;
 }
 
 function formatRelativeTime(timestamp?: number): string {
@@ -84,11 +86,10 @@ export function ProjectSessionTree({
       const sProjId = sess.projectId;
       let matched = false;
 
-      // 1. Directory-first match against specific projects (e.g. D:\Projects\Anilili)
+      // 1. Directory-first exact match against specific projects (matching OpenCode Desktop)
       if (sDir) {
         for (const proj of specificProjects) {
-          const pDir = normalizePath(proj.worktree);
-          if (pDir && (sDir === pDir || sDir.startsWith(pDir + '/'))) {
+          if (isSessionInProject(sess, proj)) {
             map.get(proj.id)!.push(sess);
             matched = true;
             break;
@@ -96,8 +97,8 @@ export function ProjectSessionTree({
         }
       }
 
-      // 2. Exact projectId match against specific projects (ignoring 'global')
-      if (!matched && sProjId && sProjId !== 'global') {
+      // 2. Exact projectId match against specific projects ONLY if directory was not provided
+      if (!matched && !sDir && sProjId && sProjId !== 'global') {
         for (const proj of specificProjects) {
           if (proj.id === sProjId) {
             map.get(proj.id)!.push(sess);

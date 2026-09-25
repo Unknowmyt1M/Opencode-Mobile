@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+import * as crypto from 'crypto';
 import type {
   OpenCodeSession,
   OpenCodeProject,
@@ -71,32 +73,111 @@ export class OpenCodeAdapter {
     return h;
   }
 
-  async listProjects(): Promise<OpenCodeProject[]> {
-    const res = await fetch(`${this.baseUrl}/project`, {
-      headers: this.getHeaders(),
-    });
-    if (!res.ok) {
-      throw new Error(`Failed to list projects: HTTP ${res.status}`);
+  private getDesktopDataPaths(): string[] {
+    const paths: string[] = [];
+    const home = os.homedir();
+    if (process.env.APPDATA) {
+      paths.push(path.join(process.env.APPDATA, 'ai.opencode.desktop', 'opencode.global.dat'));
     }
-    const data = (await res.json()) as any[];
-    return (data || []).map((p) => {
-      const parts = (p.worktree || '').split(/[\\/]/).filter(Boolean);
-      const inferredName =
-        p.id === 'global' || p.worktree === '/'
-          ? 'Global Sessions'
-          : parts.length > 0
-          ? parts[parts.length - 1]
-          : undefined;
-      return {
-        id: p.id,
-        worktree: p.worktree,
-        name: p.name || inferredName,
-        vcs: p.vcs,
-        time: p.time,
-        icon: p.icon,
-        sandboxes: p.sandboxes,
-      };
-    });
+    paths.push(path.join(home, 'Library', 'Application Support', 'ai.opencode.desktop', 'opencode.global.dat'));
+    paths.push(path.join(home, '.config', 'ai.opencode.desktop', 'opencode.global.dat'));
+    return paths;
+  }
+
+  private readDesktopProjects(): Array<{ worktree: string; sandboxes?: string[] }> {
+    for (const p of this.getDesktopDataPaths()) {
+      try {
+        if (fs.existsSync(p)) {
+          const raw = fs.readFileSync(p, 'utf8');
+          const parsed = JSON.parse(raw);
+          const server = typeof parsed.server === 'string' ? JSON.parse(parsed.server) : parsed.server;
+          const local = server?.projects?.local;
+          if (Array.isArray(local) && local.length > 0) {
+            return local;
+          }
+        }
+      } catch {}
+    }
+    return [];
+  }
+
+  private normalizePath(p?: string): string {
+    if (!p) return '';
+    return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  }
+
+  async listProjects(): Promise<OpenCodeProject[]> {
+    let serverProjects: any[] = [];
+    try {
+      const res = await fetch(`${this.baseUrl}/project`, {
+        headers: this.getHeaders(),
+      });
+      if (res.ok) {
+        serverProjects = (await res.json()) as any[];
+      }
+    } catch (e: any) {
+      console.warn(`[opencodeAdapter] Failed to fetch server projects: ${e.message}`);
+    }
+
+    const desktopProjects = this.readDesktopProjects();
+    const mergedMap = new Map<string, OpenCodeProject>();
+
+    // 1. Add desktop projects first (exact user-managed projects from OpenCode Desktop home screen)
+    for (const dp of desktopProjects) {
+      if (!dp.worktree) continue;
+      const key = this.normalizePath(dp.worktree);
+      if (!key) continue;
+      const parts = dp.worktree.split(/[\\/]/).filter(Boolean);
+      const inferredName = parts.length > 0 ? parts[parts.length - 1] : 'Project';
+      mergedMap.set(key, {
+        id: `proj_${crypto.createHash('sha256').update(key).digest('hex').slice(0, 16)}`,
+        worktree: dp.worktree,
+        name: inferredName,
+        sandboxes: dp.sandboxes || [],
+      });
+    }
+
+    // 2. Merge server projects (enrich with real ID, VCS, time, icon if available)
+    for (const sp of serverProjects) {
+      if (sp.id === 'global' || sp.worktree === '/') continue;
+      const key = this.normalizePath(sp.worktree);
+      if (!key) continue;
+      const existing = mergedMap.get(key);
+      if (existing) {
+        existing.id = sp.id;
+        if (sp.name) existing.name = sp.name;
+        if (sp.vcs) existing.vcs = sp.vcs;
+        if (sp.time) existing.time = sp.time;
+        if (sp.icon) existing.icon = sp.icon;
+        if (sp.sandboxes && sp.sandboxes.length > 0) existing.sandboxes = sp.sandboxes;
+      } else {
+        const parts = (sp.worktree || '').split(/[\\/]/).filter(Boolean);
+        const inferredName = parts.length > 0 ? parts[parts.length - 1] : 'Project';
+        mergedMap.set(key, {
+          id: sp.id,
+          worktree: sp.worktree,
+          name: sp.name || inferredName,
+          vcs: sp.vcs,
+          time: sp.time,
+          icon: sp.icon,
+          sandboxes: sp.sandboxes || [],
+        });
+      }
+    }
+
+    // 3. Add synthetic global project at the end
+    const globalSp = serverProjects.find((p) => p.id === 'global' || p.worktree === '/');
+    if (globalSp) {
+      mergedMap.set('global', {
+        id: 'global',
+        worktree: '/',
+        name: 'Global Sessions',
+        time: globalSp.time,
+        icon: globalSp.icon,
+      });
+    }
+
+    return Array.from(mergedMap.values());
   }
 
   async listGlobalSessions(limit = 2000): Promise<OpenCodeSession[]> {
