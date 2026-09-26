@@ -17,8 +17,9 @@ import {
   CheckCircle2,
   AlertCircle,
 } from 'lucide-react';
-import type { DeviceInfo, OpenCodeSession, ProjectContext, OpenCodeProject } from '@opencode-remote/protocol';
+import type { DeviceInfo, OpenCodeSession, ProjectContext, OpenCodeProject, McpServerInfo, LspItem } from '@opencode-remote/protocol';
 import { ProjectSelector } from './ProjectSelector';
+import { StatusPopover } from './StatusPopover';
 
 interface DashboardProps {
   device?: DeviceInfo;
@@ -32,6 +33,12 @@ interface DashboardProps {
   onCreateSession: (title?: string, directory?: string) => void;
   onRefreshSessions: () => void;
   onPairSubmit?: (code: string) => Promise<{ success: boolean; message?: string }>;
+  mcps?: Record<string, McpServerInfo>;
+  plugins?: string[];
+  lsps?: LspItem[];
+  onToggleMcp?: (name: string) => Promise<boolean>;
+  isTogglingMcp?: string | null;
+  onRefreshMcp?: () => void;
 }
 
 export function Dashboard({
@@ -46,6 +53,12 @@ export function Dashboard({
   onCreateSession,
   onRefreshSessions,
   onPairSubmit,
+  mcps = {},
+  plugins = [],
+  lsps = [],
+  onToggleMcp,
+  isTogglingMcp,
+  onRefreshMcp,
 }: DashboardProps) {
   const [showNewModal, setShowNewModal] = useState(false);
   const [sessionTitle, setSessionTitle] = useState('');
@@ -243,7 +256,17 @@ export function Dashboard({
             </div>
           </div>
 
-          <div className="text-right">
+          <div className="flex items-center gap-2">
+            {onToggleMcp && (
+              <StatusPopover
+                mcps={mcps}
+                plugins={plugins}
+                lsps={lsps}
+                onToggleMcp={onToggleMcp}
+                isTogglingMcp={isTogglingMcp}
+                onRefresh={onRefreshMcp}
+              />
+            )}
             <span
               className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border ${
                 !device.online

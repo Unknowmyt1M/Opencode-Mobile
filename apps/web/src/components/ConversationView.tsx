@@ -23,6 +23,8 @@ import type {
   ContextMention,
   SessionInteractionMode,
   FsEntry,
+  McpServerInfo,
+  LspItem,
 } from '@opencode-remote/protocol';
 import { type WorkspaceTab } from '../useRelay';
 import { ReviewView } from './ReviewView';
@@ -38,6 +40,7 @@ import { QuestionCard } from './QuestionCard';
 import { FileTreeExplorer } from './FileTreeExplorer';
 import { ContextMentionModal } from './ContextMentionModal';
 import { SafeRevertModal } from './SafeRevertModal';
+import { StatusPopover } from './StatusPopover';
 import type { QueuedMessage } from '../types/queue';
 import type { SessionTelemetry } from '../useRelay';
 import type { MessagePart } from '@opencode-remote/protocol';
@@ -323,6 +326,12 @@ interface ConversationViewProps {
   sessionStatuses?: Record<string, string>;
   onSelectSubagent?: (subagentId: string, directory?: string) => void;
   onBackToParent?: () => void;
+  mcps?: Record<string, McpServerInfo>;
+  plugins?: string[];
+  lsps?: LspItem[];
+  onToggleMcp?: (name: string) => Promise<boolean>;
+  isTogglingMcp?: string | null;
+  onRefreshMcp?: () => void;
 }
 
 export const ConversationView: React.FC<ConversationViewProps> = ({
@@ -384,6 +393,12 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
   sessionStatuses = {},
   onSelectSubagent,
   onBackToParent,
+  mcps = {},
+  plugins = [],
+  lsps = [],
+  onToggleMcp,
+  isTogglingMcp = null,
+  onRefreshMcp,
 }) => {
   const isSubagent = Boolean(session.parentID) || Boolean(session.title && /(@[\w-]+\s+subagent|\bsubagent\b)/i.test(session.title));
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -516,6 +531,16 @@ export const ConversationView: React.FC<ConversationViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {onToggleMcp && (
+              <StatusPopover
+                mcps={mcps}
+                plugins={plugins}
+                lsps={lsps}
+                onToggleMcp={onToggleMcp}
+                isTogglingMcp={isTogglingMcp}
+                onRefresh={onRefreshMcp}
+              />
+            )}
             {isStreaming && (
               <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-[10px] font-mono text-amber-300 animate-pulse">
                 <Sparkles className="w-3 h-3" />

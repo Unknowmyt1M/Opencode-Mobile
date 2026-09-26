@@ -36,6 +36,13 @@ import {
   type SessionListGlobalResultPayload,
   type SessionListProjectResultPayload,
   type QueuedMessage,
+  type McpServerInfo,
+  type McpListResultPayload,
+  type McpToggleResultPayload,
+  type PluginListResultPayload,
+  type LspItem,
+  type LspListResultPayload,
+  evaluateSequenceTransition,
 } from '@opencode-remote/protocol';
 import { useMessageQueue } from './hooks/useMessageQueue';
 import { playSound } from './utils/audio';
@@ -118,12 +125,20 @@ export function useRelay(relayWsUrl?: string) {
 
   const [permissions, setPermissions] = useState<Record<string, PermissionItem[]>>({});
   const [questions, setQuestions] = useState<Record<string, QuestionItem[]>>({});
+
+  // Phase 4: MCP, Plugins & LSP State
+  const [mcps, setMcps] = useState<Record<string, McpServerInfo>>({});
+  const [plugins, setPlugins] = useState<string[]>([]);
+  const [lsps, setLsps] = useState<LspItem[]>([]);
+  const [isTogglingMcp, setIsTogglingMcp] = useState<string | null>(null);
+
   const deviceTransitionGenerationRef = useRef<number>(0);
   const [sessionStatuses, setSessionStatuses] = useState<Record<string, string>>({});
   const fetchTodosRef = useRef<((deviceId: string, sessionId: string) => void) | null>(null);
   const fetchSessionsRef = useRef<((deviceId: string) => Promise<any>) | null>(null);
   const reconcileSessionRef = useRef<((deviceId: string, sessionId: string) => Promise<any>) | null>(null);
   const syncQueueRef = useRef<(sessionId: string, queue: QueuedMessage[], revision?: number) => void>(() => {});
+  const clearQueueRef = useRef<(sessionId: string) => void>(() => {});
   const lastSequenceRef = useRef<Map<string, number>>(new Map());
   const agentEpochsRef = useRef<Map<string, string>>(new Map()); // sessionId -> agentInstanceId
   const reconciliationInFlightRef = useRef<Map<string, { promise: Promise<any>; generation: number }>>(new Map());
@@ -207,8 +222,8 @@ export function useRelay(relayWsUrl?: string) {
 
   // Authoritative event sequence tracking & gap-triggered reconciliation
   const handleEventSequence = useCallback(
-    (sessionId: string, seq?: number, agentInstanceId?: string) => {
-      if (typeof seq !== 'number') return;
+    (sessionId: string, seq?: number, agentInstanceId?: string): boolean => {
+      if (typeof seq !== 'number') return true;
 
       if (agentInstanceId) {
         const currentEpoch = agentEpochsRef.current.get(sessionId);
@@ -219,15 +234,25 @@ export function useRelay(relayWsUrl?: string) {
           );
           agentEpochsRef.current.set(sessionId, agentInstanceId);
           lastSequenceRef.current.set(sessionId, seq);
-          return;
+          return true;
         }
         agentEpochsRef.current.set(sessionId, agentInstanceId);
       }
 
       const last = lastSequenceRef.current.get(sessionId);
-      if (last !== undefined && seq > last + 1) {
+      const evaluation = evaluateSequenceTransition(last, seq);
+
+      if (evaluation.action === 'STALE') {
         console.warn(
-          `[useRelay] Event sequence gap detected for session ${sessionId}: expected ${last + 1}, received ${seq}. Triggering authoritative snapshot reconciliation.`
+          `[useRelay] Stale/duplicate sequence ${seq} ignored for session ${sessionId} (last seen: ${last}). Monotonic cursor preserved.`
+        );
+        // Do NOT move cursor backwards!
+        return false;
+      }
+
+      if (evaluation.action === 'GAP') {
+        console.warn(
+          `[useRelay] Event sequence gap detected for session ${sessionId}: expected ${last! + 1}, received ${seq} (gap: ${evaluation.gapSize}). Triggering authoritative snapshot reconciliation.`
         );
         if (activeSessionRef.current?.session?.id === sessionId && selectedDeviceIdRef.current) {
           const deviceId = selectedDeviceIdRef.current;
@@ -242,7 +267,10 @@ export function useRelay(relayWsUrl?: string) {
           }
         }
       }
-      lastSequenceRef.current.set(sessionId, seq);
+
+      // Update cursor monotonically
+      lastSequenceRef.current.set(sessionId, evaluation.nextSequence);
+      return true;
     },
     []
   );
@@ -1214,6 +1242,7 @@ export function useRelay(relayWsUrl?: string) {
                 });
                 lastSequenceRef.current.delete(sessionId);
                 agentEpochsRef.current.delete(sessionId);
+                clearQueueRef.current?.(sessionId);
                 if (activeSessionRef.current?.session?.id === sessionId) {
                   setActiveSession(null);
                   setActiveDiffFile(null);
@@ -1295,6 +1324,37 @@ export function useRelay(relayWsUrl?: string) {
                   return next;
                 });
               }
+              break;
+            }
+
+            case 'MCP_LIST_RESULT': {
+              const payload = msg.payload as McpListResultPayload;
+              if (payload.mcps) setMcps(payload.mcps);
+              break;
+            }
+
+            case 'MCP_TOGGLE_RESULT': {
+              const payload = msg.payload as McpToggleResultPayload;
+              if (payload.mcps) {
+                setMcps(payload.mcps);
+              } else if (payload.name && payload.status) {
+                setMcps((prev) => ({
+                  ...prev,
+                  [payload.name]: { status: payload.status!, error: payload.error },
+                }));
+              }
+              break;
+            }
+
+            case 'PLUGIN_LIST_RESULT': {
+              const payload = msg.payload as PluginListResultPayload;
+              if (Array.isArray(payload.plugins)) setPlugins(payload.plugins);
+              break;
+            }
+
+            case 'LSP_LIST_RESULT': {
+              const payload = msg.payload as LspListResultPayload;
+              if (Array.isArray(payload.lsps)) setLsps(payload.lsps);
               break;
             }
 
@@ -1759,7 +1819,8 @@ export function useRelay(relayWsUrl?: string) {
 
   useEffect(() => {
     syncQueueRef.current = syncQueue;
-  }, [syncQueue]);
+    clearQueueRef.current = clearQueue;
+  }, [syncQueue, clearQueue]);
 
   const sendMessage = useCallback(
     (
@@ -2254,6 +2315,96 @@ export function useRelay(relayWsUrl?: string) {
     [selectedDevice, sendRpc]
   );
 
+  // Phase 4: MCP, Plugins & LSP API
+  const fetchMcps = useCallback(async () => {
+    if (!selectedDevice) return {};
+    const token = deviceTokensRef.current[selectedDevice.deviceId];
+    try {
+      const res = await sendRpc<McpListResultPayload>(
+        createMessage('MCP_LIST', {
+          deviceId: selectedDevice.deviceId,
+          deviceToken: token,
+        })
+      );
+      if (res?.mcps) {
+        setMcps(res.mcps);
+      }
+      return res?.mcps || {};
+    } catch (err: any) {
+      console.warn('Failed to fetch MCP list:', err.message);
+      return {};
+    }
+  }, [selectedDevice, sendRpc]);
+
+  const toggleMcp = useCallback(async (name: string): Promise<boolean> => {
+    if (!selectedDevice) return false;
+    const token = deviceTokensRef.current[selectedDevice.deviceId];
+    setIsTogglingMcp(name);
+    try {
+      const res = await sendRpc<McpToggleResultPayload>(
+        createMessage('MCP_TOGGLE', {
+          deviceId: selectedDevice.deviceId,
+          name,
+          deviceToken: token,
+        })
+      );
+      if (res?.mcps) {
+        setMcps(res.mcps);
+      } else if (res?.status) {
+        setMcps((prev) => ({
+          ...prev,
+          [name]: { status: res.status!, error: res.error },
+        }));
+      }
+      return res?.success ?? false;
+    } catch (err: any) {
+      console.warn(`Failed to toggle MCP server '${name}':`, err.message);
+      return false;
+    } finally {
+      setIsTogglingMcp(null);
+    }
+  }, [selectedDevice, sendRpc]);
+
+  const fetchPlugins = useCallback(async () => {
+    if (!selectedDevice) return [];
+    const token = deviceTokensRef.current[selectedDevice.deviceId];
+    try {
+      const res = await sendRpc<PluginListResultPayload>(
+        createMessage('PLUGIN_LIST', {
+          deviceId: selectedDevice.deviceId,
+          deviceToken: token,
+        })
+      );
+      if (Array.isArray(res?.plugins)) {
+        setPlugins(res.plugins);
+      }
+      return res?.plugins || [];
+    } catch (err: any) {
+      console.warn('Failed to fetch plugins:', err.message);
+      return [];
+    }
+  }, [selectedDevice, sendRpc]);
+
+  const fetchLsps = useCallback(async () => {
+    if (!selectedDevice) return [];
+    const token = deviceTokensRef.current[selectedDevice.deviceId];
+    try {
+      const res = await sendRpc<LspListResultPayload>(
+        createMessage('LSP_LIST', {
+          deviceId: selectedDevice.deviceId,
+          deviceToken: token,
+        })
+      );
+      if (Array.isArray(res?.lsps)) {
+        setLsps(res.lsps);
+      }
+      return res?.lsps || [];
+    } catch (err: any) {
+      console.warn('Failed to fetch LSP list:', err.message);
+      return [];
+    }
+  }, [selectedDevice, sendRpc]);
+
   useEffect(() => {
     isUnmountedRef.current = false;
     connect();
@@ -2334,6 +2485,15 @@ export function useRelay(relayWsUrl?: string) {
     listFs,
     findFs,
     readFs,
+    // Phase 4: MCP, Plugins & LSP
+    mcps,
+    plugins,
+    lsps,
+    isTogglingMcp,
+    fetchMcps,
+    toggleMcp,
+    fetchPlugins,
+    fetchLsps,
     // Queue
     queuedMessages,
     editingQueueItem,

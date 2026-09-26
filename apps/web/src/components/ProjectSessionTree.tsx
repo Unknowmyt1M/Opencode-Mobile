@@ -8,7 +8,7 @@ import {
   Loader2,
   ChevronsUpDown,
 } from 'lucide-react';
-import type { OpenCodeProject, OpenCodeSession } from '@opencode-remote/protocol';
+import { type OpenCodeProject, type OpenCodeSession, arePathsEqual, normalizePath } from '@opencode-remote/protocol';
 
 interface ProjectSessionTreeProps {
   projects: OpenCodeProject[];
@@ -20,19 +20,14 @@ interface ProjectSessionTreeProps {
   onCreateSession: (title?: string, directory?: string, projectId?: string) => void;
 }
 
-function normalizePath(p?: string): string {
-  if (!p) return '';
-  return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-}
-
 function isSessionInProject(session: OpenCodeSession, project: OpenCodeProject): boolean {
   if (!session.directory || !project.worktree) {
     return Boolean(session.projectId && project.id && session.projectId === project.id && project.id !== 'global');
   }
-  const sDir = normalizePath(session.directory);
-  const pDir = normalizePath(project.worktree);
-  const isSandbox = (project.sandboxes || []).some((sb) => normalizePath(sb) === sDir);
-  return sDir === pDir || isSandbox;
+  if (arePathsEqual(session.directory, project.worktree)) {
+    return true;
+  }
+  return (project.sandboxes || []).some((sb) => arePathsEqual(sb, session.directory));
 }
 
 function formatRelativeTime(timestamp?: number): string {

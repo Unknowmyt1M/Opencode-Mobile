@@ -23,6 +23,7 @@ import { SessionLoadingSkeleton } from './components/SessionLoadingSkeleton';
 import { SessionTelemetryModal } from './components/SessionTelemetryModal';
 import { FileTreeExplorer } from './components/FileTreeExplorer';
 import { ProjectSessionTree } from './components/ProjectSessionTree';
+import { StatusPopover } from './components/StatusPopover';
 
 export default function App() {
   const {
@@ -98,6 +99,15 @@ export default function App() {
     listFs,
     findFs,
     readFs,
+    // Phase 4: MCP, Plugins & LSP
+    mcps,
+    plugins,
+    lsps,
+    isTogglingMcp,
+    fetchMcps,
+    toggleMcp,
+    fetchPlugins,
+    fetchLsps,
   } = useRelay();
 
   // Right pane tab on desktop (review, terminal, activity, files)
@@ -146,6 +156,9 @@ export default function App() {
       fetchModels();
       fetchPtys();
       fetchPermissions();
+      fetchMcps();
+      fetchPlugins();
+      fetchLsps();
     }
   }, [
     selectedDevice?.paired,
@@ -156,6 +169,9 @@ export default function App() {
     fetchModels,
     fetchPtys,
     fetchPermissions,
+    fetchMcps,
+    fetchPlugins,
+    fetchLsps,
     openSession,
   ]);
 
@@ -210,14 +226,27 @@ export default function App() {
                 </div>
               </div>
 
-              <MachineSelector
-                devices={devices}
-                selectedDevice={selectedDevice}
-                onSelectDevice={setSelectedDeviceId}
-                onPairSubmit={pairDevice}
-                onRevokeDevice={revokeDevice}
-                onRefresh={refreshDevices}
-              />
+              <div className="flex items-center gap-1.5">
+                {selectedDevice && (
+                  <StatusPopover
+                    mcps={mcps}
+                    plugins={plugins}
+                    lsps={lsps}
+                    onToggleMcp={toggleMcp}
+                    isTogglingMcp={isTogglingMcp}
+                    onRefresh={fetchMcps}
+                    compact={true}
+                  />
+                )}
+                <MachineSelector
+                  devices={devices}
+                  selectedDevice={selectedDevice}
+                  onSelectDevice={setSelectedDeviceId}
+                  onPairSubmit={pairDevice}
+                  onRevokeDevice={revokeDevice}
+                  onRefresh={refreshDevices}
+                />
+              </div>
             </div>
 
           </div>
@@ -368,6 +397,12 @@ export default function App() {
                 }
               }}
               hideTabs={true}
+              mcps={mcps}
+              plugins={plugins}
+              lsps={lsps}
+              onToggleMcp={toggleMcp}
+              isTogglingMcp={isTogglingMcp}
+              onRefreshMcp={fetchMcps}
             />
           ) : selectedDevice && !selectedDevice.paired ? (
             <div className="flex-1 flex flex-col items-center justify-center p-8 max-w-md mx-auto w-full">
@@ -382,6 +417,12 @@ export default function App() {
                 onCreateSession={(t, dir) => createSession(selectedDevice.deviceId, t, dir)}
                 onRefreshSessions={() => fetchSessions(selectedDevice.deviceId)}
                 onPairSubmit={pairDevice}
+                mcps={mcps}
+                plugins={plugins}
+                lsps={lsps}
+                onToggleMcp={toggleMcp}
+                isTogglingMcp={isTogglingMcp}
+                onRefreshMcp={fetchMcps}
               />
             </div>
           ) : (
@@ -398,14 +439,24 @@ export default function App() {
                 </p>
               </div>
               {selectedDevice && (
-                <button
-                  type="button"
-                  onClick={() => createSession(selectedDevice.deviceId, 'New Session')}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/25 transition-all cursor-pointer"
-                >
-                  <Plus className="w-4 h-4" />
-                  Create New Session
-                </button>
+                <div className="flex items-center gap-2">
+                  <StatusPopover
+                    mcps={mcps}
+                    plugins={plugins}
+                    lsps={lsps}
+                    onToggleMcp={toggleMcp}
+                    isTogglingMcp={isTogglingMcp}
+                    onRefresh={fetchMcps}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => createSession(selectedDevice.deviceId, 'New Session')}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/25 transition-all cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Create New Session
+                  </button>
+                </div>
               )}
             </div>
           )}
@@ -665,6 +716,12 @@ export default function App() {
               }
             }}
             hideTabs={false}
+            mcps={mcps}
+            plugins={plugins}
+            lsps={lsps}
+            onToggleMcp={toggleMcp}
+            isTogglingMcp={isTogglingMcp}
+            onRefreshMcp={fetchMcps}
           />
         ) : (
           <div className="flex-1 flex flex-col justify-between bg-zinc-950 text-zinc-100 overflow-y-auto">
@@ -689,7 +746,18 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
+                {selectedDevice && (
+                  <StatusPopover
+                    mcps={mcps}
+                    plugins={plugins}
+                    lsps={lsps}
+                    onToggleMcp={toggleMcp}
+                    isTogglingMcp={isTogglingMcp}
+                    onRefresh={fetchMcps}
+                    compact={true}
+                  />
+                )}
                 <MachineSelector
                   devices={devices}
                   selectedDevice={selectedDevice}
@@ -715,6 +783,12 @@ export default function App() {
                 onCreateSession={(t, dir) => selectedDevice && createSession(selectedDevice.deviceId, t, dir)}
                 onRefreshSessions={() => selectedDevice && fetchSessions(selectedDevice.deviceId)}
                 onPairSubmit={pairDevice}
+                mcps={mcps}
+                plugins={plugins}
+                lsps={lsps}
+                onToggleMcp={toggleMcp}
+                isTogglingMcp={isTogglingMcp}
+                onRefreshMcp={fetchMcps}
               />
             </main>
           </div>

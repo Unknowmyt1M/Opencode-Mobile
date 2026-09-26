@@ -1370,6 +1370,111 @@ export const FsReadResultMessageSchema = z.object({
   }),
 });
 
+// Phase 4: MCP, Plugins & LSP Schemas
+export const McpServerInfoSchema = z.object({
+  status: z.string(),
+  error: z.string().optional(),
+});
+
+export const McpListMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('MCP_LIST'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const McpListResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('MCP_LIST_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    mcps: z.record(McpServerInfoSchema),
+  }),
+});
+
+export const McpToggleMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('MCP_TOGGLE'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    name: z.string().min(1),
+    deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const McpToggleResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('MCP_TOGGLE_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    name: z.string().min(1),
+    success: z.boolean(),
+    status: z.string().optional(),
+    error: z.string().optional(),
+    mcps: z.record(McpServerInfoSchema).optional(),
+  }),
+});
+
+export const PluginListMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PLUGIN_LIST'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const PluginListResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('PLUGIN_LIST_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    plugins: z.array(z.string()),
+  }),
+});
+
+export const LspItemSchema = z.object({
+  id: z.string(),
+  name: z.string().optional(),
+  status: z.string(),
+});
+
+export const LspListMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('LSP_LIST'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    deviceToken: z.string().max(256).optional(),
+  }),
+});
+
+export const LspListResultMessageSchema = z.object({
+  id: z.string().min(1).max(64),
+  type: z.literal('LSP_LIST_RESULT'),
+  version: z.literal(PROTOCOL_VERSION),
+  timestamp: z.number().int().positive(),
+  payload: z.object({
+    deviceId: z.string().min(1).max(128),
+    lsps: z.array(LspItemSchema),
+  }),
+});
+
 // Full Discriminated Union
 export const MessageSchema = z.discriminatedUnion('type', [
   AgentHelloMessageSchema,
@@ -1465,6 +1570,15 @@ export const MessageSchema = z.discriminatedUnion('type', [
   SessionQueueUpdateResultMessageSchema,
   SessionQueueConflictMessageSchema,
   SessionQueueSyncMessageSchema,
+  // Phase 4: MCP, Plugins & LSP
+  McpListMessageSchema,
+  McpListResultMessageSchema,
+  McpToggleMessageSchema,
+  McpToggleResultMessageSchema,
+  PluginListMessageSchema,
+  PluginListResultMessageSchema,
+  LspListMessageSchema,
+  LspListResultMessageSchema,
   // Infra
   PingMessageSchema,
   PongMessageSchema,

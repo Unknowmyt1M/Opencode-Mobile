@@ -76,6 +76,8 @@ export function useMessageQueue({
   onQueueUpdateRef.current = onQueueUpdate;
 
   const revisionsRef = useRef<Record<string, number>>({});
+  const inFlightMutationsRef = useRef<Map<string, { mutationId: string; baseRevision: number }>>(new Map());
+  const pendingMutationsRef = useRef<Map<string, QueuedMessage[]>>(new Map());
 
   // Per-session dispatch mutexes to prevent concurrent duplicates per session
   const dispatchingSessionsRef = useRef<Set<string>>(new Set());
@@ -89,6 +91,8 @@ export function useMessageQueue({
       queuesRef.current = cached;
       setQueues(cached);
       revisionsRef.current = {};
+      inFlightMutationsRef.current.clear();
+      pendingMutationsRef.current.clear();
     }
   }, [selectedDeviceId]);
 
@@ -110,22 +114,11 @@ export function useMessageQueue({
         );
         return;
       }
-      if (revision === currentRev) {
-        const curr = queuesRef.current[sessionId] || [];
-        if (
-          curr.length === newQueue.length &&
-          curr.every(
-            (m, idx) =>
-              m.id === newQueue[idx]?.id &&
-              m.content === newQueue[idx]?.content &&
-              m.status === newQueue[idx]?.status
-          )
-        ) {
-          return;
-        }
-      }
       revisionsRef.current[sessionId] = revision;
     }
+
+    // In-flight mutation completed on Relay!
+    inFlightMutationsRef.current.delete(sessionId);
 
     queuesRef.current = {
       ...queuesRef.current,
@@ -149,15 +142,22 @@ export function useMessageQueue({
         [sessionId]: newQueue,
       };
     });
+
+    // If there is a pending queued mutation buffered during in-flight wait, dispatch it now!
+    const pending = pendingMutationsRef.current.get(sessionId);
+    if (pending !== undefined) {
+      pendingMutationsRef.current.delete(sessionId);
+      const nextBaseRevision = revisionsRef.current[sessionId] || 0;
+      const nextMutationId = `mut_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      inFlightMutationsRef.current.set(sessionId, { mutationId: nextMutationId, baseRevision: nextBaseRevision });
+      onQueueUpdateRef.current?.(sessionId, pending, nextMutationId, nextBaseRevision);
+    }
   }, []);
 
-  // Dispatch local mutation: derived from ref to prevent stale closure overwrites
+  // Dispatch local mutation with per-session serialization: derived from ref to prevent stale closure overwrites
   const dispatchMutation = useCallback(
     (sessionId: string, nextQueue: QueuedMessage[]) => {
-      const baseRevision = revisionsRef.current[sessionId] || 0;
-      revisionsRef.current[sessionId] = baseRevision + 1;
-      const mutationId = `mut_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
+      // 1. Immediately update local ref and React state for responsive optimistic UI
       queuesRef.current = {
         ...queuesRef.current,
         [sessionId]: nextQueue,
@@ -172,6 +172,32 @@ export function useMessageQueue({
         }
         return updated;
       });
+
+      // 2. Check if a mutation is already in-flight for this session
+      const inFlight = inFlightMutationsRef.current.get(sessionId);
+      if (inFlight) {
+        // Buffer latest mutation; it will be dispatched automatically upon ACK/sync of in-flight mutation
+        pendingMutationsRef.current.set(sessionId, nextQueue);
+        return;
+      }
+
+      // 3. Dispatch immediately if no mutation in-flight
+      const baseRevision = revisionsRef.current[sessionId] || 0;
+      const mutationId = `mut_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      inFlightMutationsRef.current.set(sessionId, { mutationId, baseRevision });
+
+      // Liveness safety: unblock after 6s in case WebSocket drops or Relay doesn't ACK
+      setTimeout(() => {
+        const currentInFlight = inFlightMutationsRef.current.get(sessionId);
+        if (currentInFlight && currentInFlight.mutationId === mutationId) {
+          inFlightMutationsRef.current.delete(sessionId);
+          const pending = pendingMutationsRef.current.get(sessionId);
+          if (pending !== undefined) {
+            pendingMutationsRef.current.delete(sessionId);
+            dispatchMutation(sessionId, pending);
+          }
+        }
+      }, 6000);
 
       onQueueUpdateRef.current?.(sessionId, nextQueue, mutationId, baseRevision);
     },
@@ -236,7 +262,7 @@ export function useMessageQueue({
     async (sessionId: string, id: string) => {
       if (!selectedDeviceId) return;
 
-      const existing = queues[sessionId] || [];
+      const existing = queuesRef.current[sessionId] || [];
       const itemIndex = existing.findIndex((m) => m.id === id);
       if (itemIndex < 0) return;
       const item = existing[itemIndex];
@@ -244,7 +270,7 @@ export function useMessageQueue({
       if (isStreaming) {
         // Agent is busy: move to front of queue (index 0)
         if (itemIndex > 0) {
-          const list = [...(queues[sessionId] || [])];
+          const list = [...(queuesRef.current[sessionId] || [])];
           const [target] = list.splice(itemIndex, 1);
           const reordered = [target, ...list];
           dispatchMutation(sessionId, reordered);

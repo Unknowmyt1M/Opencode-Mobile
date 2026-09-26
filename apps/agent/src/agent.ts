@@ -1404,6 +1404,124 @@ export class RemoteAgent {
           break;
         }
 
+        case 'MCP_LIST': {
+          try {
+            const mcps = await this.adapter.getMcpStatus();
+            this.sendMessage(
+              createMessage(
+                'MCP_LIST_RESULT',
+                {
+                  deviceId: this.config.deviceId,
+                  mcps,
+                },
+                msg.id
+              )
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage(
+                'MCP_LIST_RESULT',
+                {
+                  deviceId: this.config.deviceId,
+                  mcps: {},
+                },
+                msg.id
+              )
+            );
+          }
+          break;
+        }
+
+        case 'MCP_TOGGLE': {
+          try {
+            const result = await this.adapter.toggleMcp(msg.payload.name);
+            this.sendMessage(
+              createMessage(
+                'MCP_TOGGLE_RESULT',
+                {
+                  deviceId: this.config.deviceId,
+                  name: msg.payload.name,
+                  success: result.success,
+                  status: result.status,
+                  error: result.error,
+                  mcps: result.mcps,
+                },
+                msg.id
+              )
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage(
+                'MCP_TOGGLE_RESULT',
+                {
+                  deviceId: this.config.deviceId,
+                  name: msg.payload.name,
+                  success: false,
+                  error: err.message,
+                },
+                msg.id
+              )
+            );
+          }
+          break;
+        }
+
+        case 'PLUGIN_LIST': {
+          try {
+            const plugins = await this.adapter.getPlugins();
+            this.sendMessage(
+              createMessage(
+                'PLUGIN_LIST_RESULT',
+                {
+                  deviceId: this.config.deviceId,
+                  plugins,
+                },
+                msg.id
+              )
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage(
+                'PLUGIN_LIST_RESULT',
+                {
+                  deviceId: this.config.deviceId,
+                  plugins: [],
+                },
+                msg.id
+              )
+            );
+          }
+          break;
+        }
+
+        case 'LSP_LIST': {
+          try {
+            const lsps = await this.adapter.getLspStatus();
+            this.sendMessage(
+              createMessage(
+                'LSP_LIST_RESULT',
+                {
+                  deviceId: this.config.deviceId,
+                  lsps,
+                },
+                msg.id
+              )
+            );
+          } catch (err: any) {
+            this.sendMessage(
+              createMessage(
+                'LSP_LIST_RESULT',
+                {
+                  deviceId: this.config.deviceId,
+                  lsps: [],
+                },
+                msg.id
+              )
+            );
+          }
+          break;
+        }
+
         case 'PING': {
           const pong = createMessage('PONG', { nonce: msg.payload.nonce });
           this.sendMessage(pong);

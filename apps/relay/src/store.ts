@@ -30,6 +30,8 @@ export interface PersistedSessionQueueRecord {
 }
 
 export interface PersistedProcessedMutation {
+  deviceId?: string;
+  sessionId?: string;
   mutationId: string;
   revision: number;
   timestamp: number;
@@ -129,7 +131,8 @@ export class RelayStore {
         if (Array.isArray(data.processedMutations)) {
           for (const pm of data.processedMutations) {
             if (pm && pm.mutationId) {
-              this.processedMutations.set(pm.mutationId, pm);
+              const key = this.getMutationKey(pm.mutationId, pm.deviceId, pm.sessionId);
+              this.processedMutations.set(key, pm);
             }
           }
         }
@@ -517,20 +520,31 @@ export class RelayStore {
     this.persist();
   }
 
-  hasProcessedMutation(mutationId: string): PersistedProcessedMutation | undefined {
+  private getMutationKey(mutationId: string, deviceId?: string, sessionId?: string): string {
+    return `${deviceId || 'global'}:${sessionId || 'global'}:${mutationId}`;
+  }
+
+  hasProcessedMutation(mutationId: string, deviceId?: string, sessionId?: string): PersistedProcessedMutation | undefined {
+    const scopedKey = this.getMutationKey(mutationId, deviceId, sessionId);
+    const hit = this.processedMutations.get(scopedKey);
+    if (hit) return hit;
+    // Fallback for legacy unscoped mutations in store
     return this.processedMutations.get(mutationId);
   }
 
-  recordProcessedMutation(mutationId: string, revision: number): void {
-    this.processedMutations.set(mutationId, {
+  recordProcessedMutation(mutationId: string, revision: number, deviceId?: string, sessionId?: string): void {
+    const key = this.getMutationKey(mutationId, deviceId, sessionId);
+    this.processedMutations.set(key, {
+      deviceId,
+      sessionId,
       mutationId,
       revision,
       timestamp: Date.now(),
     });
     if (this.processedMutations.size > 2000) {
       const expiry = Date.now() - 86400000;
-      for (const [id, m] of this.processedMutations.entries()) {
-        if (m.timestamp < expiry) this.processedMutations.delete(id);
+      for (const [k, m] of this.processedMutations.entries()) {
+        if (m.timestamp < expiry) this.processedMutations.delete(k);
       }
     }
     this.persist();
@@ -538,6 +552,13 @@ export class RelayStore {
 
   deleteSessionQueue(deviceId: string, sessionId: string): boolean {
     const deleted = this.sessionQueues.delete(`${deviceId}:${sessionId}`);
+    // Clean up processed mutations for this session
+    const prefix = `${deviceId}:${sessionId}:`;
+    for (const key of Array.from(this.processedMutations.keys())) {
+      if (key.startsWith(prefix)) {
+        this.processedMutations.delete(key);
+      }
+    }
     if (deleted) {
       this.persist();
     }
@@ -553,6 +574,13 @@ export class RelayStore {
         changed = true;
       }
     }
+    // Clean up processed mutations for this device
+    for (const [key, mut] of Array.from(this.processedMutations.entries())) {
+      if (mut.deviceId === deviceId || key.startsWith(prefix)) {
+        this.processedMutations.delete(key);
+        changed = true;
+      }
+    }
     if (changed) {
       this.persist();
     }
@@ -560,6 +588,16 @@ export class RelayStore {
 
   deleteDevice(deviceId: string): boolean {
     this.deleteDeviceSessionQueues(deviceId);
+
+    // Clean up active pairings and code mappings for this device
+    for (const [pairingId, session] of Array.from(this.activePairings.entries())) {
+      if (session.deviceId === deviceId) {
+        this.codeToPairingId.delete(session.code);
+        this.codeToPairingId.delete(session.code.replace(/-/g, ''));
+        this.activePairings.delete(pairingId);
+      }
+    }
+
     const deleted = this.devices.delete(deviceId);
     if (deleted) {
       this.persist();
@@ -570,6 +608,7 @@ export class RelayStore {
   clear() {
     this.devices.clear();
     this.sessionQueues.clear();
+    this.processedMutations.clear();
     this.activePairings.clear();
     this.codeToPairingId.clear();
     this.clientRateLimits.clear();

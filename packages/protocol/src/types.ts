@@ -872,5 +872,65 @@ export interface ContextMention {
 
 export type SessionInteractionMode = 'build' | 'plan';
 
+// ==========================================
+// Phase 4: MCP, Plugins & LSP Payloads
+// ==========================================
+export interface McpServerInfo {
+  status: 'connected' | 'disabled' | 'failed' | 'needs_auth' | 'needs_client_registration' | string;
+  error?: string;
+}
+
+export interface McpListPayload {
+  deviceId: string;
+  deviceToken?: string;
+}
+
+export interface McpListResultPayload {
+  deviceId: string;
+  mcps: Record<string, McpServerInfo>;
+}
+
+export interface McpTogglePayload {
+  deviceId: string;
+  name: string;
+  deviceToken?: string;
+}
+
+export interface McpToggleResultPayload {
+  deviceId: string;
+  name: string;
+  success: boolean;
+  status?: string;
+  error?: string;
+  mcps?: Record<string, McpServerInfo>;
+}
+
+export interface PluginListPayload {
+  deviceId: string;
+  deviceToken?: string;
+}
+
+export interface PluginListResultPayload {
+  deviceId: string;
+  plugins: string[];
+}
+
+export interface LspItem {
+  id: string;
+  name?: string;
+  status: string;
+}
+
+export interface LspListPayload {
+  deviceId: string;
+  deviceToken?: string;
+}
+
+export interface LspListResultPayload {
+  deviceId: string;
+  lsps: LspItem[];
+}
+
+
 
 

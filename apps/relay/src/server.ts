@@ -794,8 +794,8 @@ export function buildRelayServer(options: RelayOptions = {}): {
               ensureClientAuthorized(deviceId, deviceToken);
 
               // 1. Idempotency check: if mutationId has already been successfully processed, return cached result
-              if (mutationId && store.hasProcessedMutation(mutationId)) {
-                const cached = store.hasProcessedMutation(mutationId)!;
+              if (mutationId && store.hasProcessedMutation(mutationId, deviceId, sessionId)) {
+                const cached = store.hasProcessedMutation(mutationId, deviceId, sessionId)!;
                 socket.send(
                   JSON.stringify(
                     createMessage('SESSION_QUEUE_UPDATE_RESULT', {
@@ -849,7 +849,7 @@ export function buildRelayServer(options: RelayOptions = {}): {
               store.saveSessionQueue(updatedRecord);
 
               if (mutationId) {
-                store.recordProcessedMutation(mutationId, nextRevision);
+                store.recordProcessedMutation(mutationId, nextRevision, deviceId, sessionId);
               }
 
               // 4. Send ACK to requesting client
@@ -896,7 +896,11 @@ export function buildRelayServer(options: RelayOptions = {}): {
             case 'TODO_LIST_REQUEST':
             case 'FS_LIST':
             case 'FS_FIND':
-            case 'FS_READ': {
+            case 'FS_READ':
+            case 'MCP_LIST':
+            case 'MCP_TOGGLE':
+            case 'PLUGIN_LIST':
+            case 'LSP_LIST': {
               const { deviceId, deviceToken } = message.payload as { deviceId: string; deviceToken?: string };
               if (!store.verifyDeviceToken(deviceId, deviceToken)) {
                 socket.send(
@@ -1000,7 +1004,11 @@ export function buildRelayServer(options: RelayOptions = {}): {
             case 'TODO_LIST_RESULT':
             case 'FS_LIST_RESULT':
             case 'FS_FIND_RESULT':
-            case 'FS_READ_RESULT': {
+            case 'FS_READ_RESULT':
+            case 'MCP_LIST_RESULT':
+            case 'MCP_TOGGLE_RESULT':
+            case 'PLUGIN_LIST_RESULT':
+            case 'LSP_LIST_RESULT': {
               const clientSocket = requestToClient.get(message.id);
               if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
                 clientSocket.send(JSON.stringify(message));

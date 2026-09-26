@@ -2,18 +2,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import type {
-  OpenCodeSession,
-  OpenCodeProject,
-  SessionMessage,
-  SnapshotFileDiff,
-  ProjectContext,
-  PtySession,
-  ModelInfo,
-  PermissionItem,
-  TodoItem,
-  FsEntry,
+import {
+  type OpenCodeSession,
+  type OpenCodeProject,
+  type SessionMessage,
+  type SnapshotFileDiff,
+  type ProjectContext,
+  type PtySession,
+  type ModelInfo,
+  type PermissionItem,
+  type TodoItem,
+  type FsEntry,
+  type McpServerInfo,
+  type LspItem,
+  normalizePath,
+  arePathsEqual,
 } from '@opencode-remote/protocol';
+import { DesktopProjectStorage } from './desktopProjectStorage.js';
 
 export interface OpenCodeAdapterOptions {
   baseUrl?: string;
@@ -73,38 +78,7 @@ export class OpenCodeAdapter {
     return h;
   }
 
-  private getDesktopDataPaths(): string[] {
-    const paths: string[] = [];
-    const home = os.homedir();
-    if (process.env.APPDATA) {
-      paths.push(path.join(process.env.APPDATA, 'ai.opencode.desktop', 'opencode.global.dat'));
-    }
-    paths.push(path.join(home, 'Library', 'Application Support', 'ai.opencode.desktop', 'opencode.global.dat'));
-    paths.push(path.join(home, '.config', 'ai.opencode.desktop', 'opencode.global.dat'));
-    return paths;
-  }
-
-  private readDesktopProjects(): Array<{ worktree: string; sandboxes?: string[] }> {
-    for (const p of this.getDesktopDataPaths()) {
-      try {
-        if (fs.existsSync(p)) {
-          const raw = fs.readFileSync(p, 'utf8');
-          const parsed = JSON.parse(raw);
-          const server = typeof parsed.server === 'string' ? JSON.parse(parsed.server) : parsed.server;
-          const local = server?.projects?.local;
-          if (Array.isArray(local) && local.length > 0) {
-            return local;
-          }
-        }
-      } catch {}
-    }
-    return [];
-  }
-
-  private normalizePath(p?: string): string {
-    if (!p) return '';
-    return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  }
+  private desktopStorage = new DesktopProjectStorage();
 
   async listProjects(): Promise<OpenCodeProject[]> {
     let serverProjects: any[] = [];
@@ -112,20 +86,34 @@ export class OpenCodeAdapter {
       const res = await fetch(`${this.baseUrl}/project`, {
         headers: this.getHeaders(),
       });
-      if (res.ok) {
+
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          throw new Error(
+            `OpenCode server authentication failed (HTTP ${res.status}): Access denied. Please check your OpenCode server password/credentials.`
+          );
+        } else if (res.status === 404) {
+          console.info(`[opencodeAdapter] /project endpoint not supported (HTTP 404). Falling back to OpenCode Desktop project store.`);
+        } else {
+          console.warn(`[opencodeAdapter] Failed to fetch server projects: HTTP ${res.status}`);
+        }
+      } else {
         serverProjects = (await res.json()) as any[];
       }
     } catch (e: any) {
-      console.warn(`[opencodeAdapter] Failed to fetch server projects: ${e.message}`);
+      if (e.message && e.message.includes('authentication failed')) {
+        throw e;
+      }
+      console.warn(`[opencodeAdapter] Server /project query failed, falling back to desktop projects: ${e.message}`);
     }
 
-    const desktopProjects = this.readDesktopProjects();
+    const desktopProjects = this.desktopStorage.readProjects();
     const mergedMap = new Map<string, OpenCodeProject>();
 
     // 1. Add desktop projects first (exact user-managed projects from OpenCode Desktop home screen)
     for (const dp of desktopProjects) {
       if (!dp.worktree) continue;
-      const key = this.normalizePath(dp.worktree);
+      const key = normalizePath(dp.worktree);
       if (!key) continue;
       const parts = dp.worktree.split(/[\\/]/).filter(Boolean);
       const inferredName = parts.length > 0 ? parts[parts.length - 1] : 'Project';
@@ -140,7 +128,7 @@ export class OpenCodeAdapter {
     // 2. Merge server projects (enrich with real ID, VCS, time, icon if available)
     for (const sp of serverProjects) {
       if (sp.id === 'global' || sp.worktree === '/') continue;
-      const key = this.normalizePath(sp.worktree);
+      const key = normalizePath(sp.worktree);
       if (!key) continue;
       const existing = mergedMap.get(key);
       if (existing) {
@@ -180,27 +168,61 @@ export class OpenCodeAdapter {
     return Array.from(mergedMap.values());
   }
 
-  async listGlobalSessions(limit = 2000): Promise<OpenCodeSession[]> {
+  async listGlobalSessions(maxTotal = 5000): Promise<OpenCodeSession[]> {
+    const allSessions: OpenCodeSession[] = [];
+    let cursor: string | undefined = undefined;
+    const pageSize = 100;
+    let attempts = 0;
+    const maxPages = Math.ceil(maxTotal / pageSize);
+
     try {
-      const targetLimit = limit || 2000;
-      const res = await fetch(`${this.baseUrl}/api/session?limit=${targetLimit}`, {
-        headers: this.getHeaders(),
-      });
-      if (res.ok) {
+      while (attempts < maxPages) {
+        attempts++;
+        let url = `${this.baseUrl}/api/session?limit=${pageSize}`;
+        if (cursor) {
+          url += `&cursor=${encodeURIComponent(cursor)}`;
+        }
+
+        const res = await fetch(url, {
+          headers: this.getHeaders(),
+        });
+
+        if (!res.ok) {
+          if (attempts === 1) {
+            // First page failed: likely /api/session unsupported (404), fall back below
+            break;
+          }
+          // Partial page fetch failure: return what we collected
+          break;
+        }
+
         const json = (await res.json()) as any;
         const list = json?.data || [];
-        return list.map((s: any) => ({
-          id: s.id,
-          title: s.title || 'Untitled Session',
-          createdAt: s.time?.created || Date.now(),
-          updatedAt: s.time?.updated,
-          projectId: s.projectID || s.projectId,
-          directory: s.location?.directory || s.directory,
-          parentID: s.parentID,
-        }));
+        for (const s of list) {
+          allSessions.push({
+            id: s.id,
+            title: s.title || 'Untitled Session',
+            createdAt: s.time?.created || Date.now(),
+            updatedAt: s.time?.updated,
+            projectId: s.projectID || s.projectId,
+            directory: s.location?.directory || s.directory,
+            parentID: s.parentID,
+          });
+          if (allSessions.length >= maxTotal) break;
+        }
+
+        const nextCursor = json?.cursor?.next;
+        if (!nextCursor || allSessions.length >= maxTotal || list.length === 0) {
+          break;
+        }
+        cursor = nextCursor;
+      }
+
+      if (allSessions.length > 0) {
+        return allSessions;
       }
     } catch (e: any) {
-      console.warn(`[opencodeAdapter] /api/session fallback: ${e.message}`);
+      console.warn(`[opencodeAdapter] /api/session pagination fetch fallback: ${e.message}`);
     }
 
     return this.listSessions();
@@ -1049,5 +1071,103 @@ export class OpenCodeAdapter {
       content,
       mime: contentType,
     };
+  }
+
+  async getMcpStatus(): Promise<Record<string, McpServerInfo>> {
+    try {
+      const res = await fetch(`${this.baseUrl}/mcp`, {
+        headers: this.getHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return (data && typeof data === 'object') ? data : {};
+      }
+    } catch (err: any) {
+      console.warn(`[opencodeAdapter] Failed to fetch /mcp:`, err.message);
+    }
+    return {};
+  }
+
+  async toggleMcp(name: string): Promise<{ success: boolean; status?: string; error?: string; mcps?: Record<string, McpServerInfo> }> {
+    try {
+      const currentMcps = await this.getMcpStatus();
+      const current = currentMcps[name];
+      const status = current?.status;
+
+      if (status === 'connected') {
+        const res = await fetch(`${this.baseUrl}/mcp/${encodeURIComponent(name)}/disconnect`, {
+          method: 'POST',
+          headers: this.getHeaders(),
+        });
+        if (!res.ok) {
+          throw new Error(`Failed to disconnect MCP server '${name}': HTTP ${res.status}`);
+        }
+      } else if (status === 'needs_auth') {
+        const res = await fetch(`${this.baseUrl}/mcp/${encodeURIComponent(name)}/auth/authenticate`, {
+          method: 'POST',
+          headers: this.getHeaders(),
+        });
+        if (!res.ok) {
+          throw new Error(`Failed to authenticate MCP server '${name}': HTTP ${res.status}`);
+        }
+      } else {
+        // 'disabled', 'failed', 'needs_client_registration' or undefined
+        const res = await fetch(`${this.baseUrl}/mcp/${encodeURIComponent(name)}/connect`, {
+          method: 'POST',
+          headers: this.getHeaders(),
+        });
+        if (!res.ok) {
+          throw new Error(`Failed to connect MCP server '${name}': HTTP ${res.status}`);
+        }
+      }
+
+      const updatedMcps = await this.getMcpStatus();
+      return {
+        success: true,
+        status: updatedMcps[name]?.status,
+        error: updatedMcps[name]?.error,
+        mcps: updatedMcps,
+      };
+    } catch (err: any) {
+      console.error(`[opencodeAdapter] Error toggling MCP server '${name}':`, err);
+      const updatedMcps = await this.getMcpStatus();
+      return {
+        success: false,
+        error: err.message,
+        mcps: updatedMcps,
+      };
+    }
+  }
+
+  async getPlugins(): Promise<string[]> {
+    try {
+      const res = await fetch(`${this.baseUrl}/config`, {
+        headers: this.getHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data?.plugin)) {
+          return data.plugin.map((item: any) => (typeof item === 'string' ? item : item[0]));
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[opencodeAdapter] Failed to fetch plugins from /config:`, err.message);
+    }
+    return [];
+  }
+
+  async getLspStatus(): Promise<LspItem[]> {
+    try {
+      const res = await fetch(`${this.baseUrl}/lsp`, {
+        headers: this.getHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return Array.isArray(data) ? data : [];
+      }
+    } catch (err: any) {
+      console.warn(`[opencodeAdapter] Failed to fetch /lsp:`, err.message);
+    }
+    return [];
   }
 }
